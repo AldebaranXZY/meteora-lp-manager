@@ -92,3 +92,9 @@ días para que aparezcan las wallets recurrentes.
 **Diagnóstico:** `npm run probe:bitquery` valida la conexión a Bitquery (auth + endpoint + esquema)
 sin levantar la app; `npm run probe:bitquery -- --discover` prueba la query de top-del-día. Lee
 `BITQUERY_API_KEY` de `.env.local` y nunca lo imprime.
+
+**Test de integración (local):** `npm run test:discover` toma el top 20 de ayer y corre el analyze
+sobre cada uno, verificando el pipeline contra datos reales. Corre **solo local** (nunca en CI: usa
+tu key y consume quota) y se engancha como **git hook de pre-push** — antes de cada `git push` se
+ejecuta solo. El hook (`.githooks/pre-push`) se activa con `npm install` (postinstall setea
+`core.hooksPath`); si no hay key, se saltea. Para forzar un push sin correrlo: `git push --no-verify`.

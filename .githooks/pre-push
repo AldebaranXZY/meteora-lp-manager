@@ -1,0 +1,11 @@
+#!/bin/sh
+# Corre el test de integración discover→analyze antes de CADA push (local).
+# Se saltea solo si no hay BITQUERY_API_KEY en .env.local (entonces no bloquea).
+# Para saltearlo a propósito (ej. red caída): git push --no-verify
+echo "[pre-push] test:discover (integración Bitquery, local)…"
+npm run --silent test:discover
+if [ $? -ne 0 ]; then
+  echo "[pre-push] ✗ test:discover falló — push abortado (usá: git push --no-verify para forzar)."
+  exit 1
+fi
+exit 0
