@@ -1,0 +1,6 @@
+# Normalizar line-endings: LF en el repo, sin importar el SO de quien commitee.
+* text=auto eol=lf
+
+# Binarios — sin conversión.
+*.png binary
+*.svg text eol=lf

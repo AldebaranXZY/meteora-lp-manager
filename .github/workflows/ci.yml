@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Permisos mínimos: el CI solo lee el repo. No necesita secretos ni escribir nada.
+permissions:
+  contents: read
+
+# Cancela runs viejos del mismo ref si llega uno nuevo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Type check + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # El build NO necesita secretos: las API routes son dinámicas y solo leen
+      # env en runtime, no en build. Si en el futuro algo leyera env en build,
+      # agregar valores DUMMY acá — NUNCA secretos reales (el repo puede ser público).
+      - name: Build
+        run: npm run build
