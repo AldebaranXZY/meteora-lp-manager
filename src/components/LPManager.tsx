@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import Link from "next/link";
 import StrategySelector from "./StrategySelector";
 import ConfigPanel from "./ConfigPanel";
 import PositionCalculator from "./PositionCalculator";
@@ -500,6 +501,7 @@ export default function LPManager() {
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               {solPrice && <span className="pill"><span className="k">SOL</span><b>${solPrice.toFixed(2)}</b></span>}
+              <Link href="/tracker" className="btn-ghost" style={{ textDecoration:"none", fontFamily:"var(--mono)", fontSize:11.5 }}>🎯 Tracker</Link>
               {walletAddress && <button className="btn-ghost" style={{ fontFamily:"var(--mono)", fontSize:11.5 }}><IcWallet /> {shortenAddress(walletAddress)}</button>}
             </div>
           </div>

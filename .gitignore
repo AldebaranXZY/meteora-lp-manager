@@ -41,3 +41,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# wallet tracker — base de datos local (nunca commitear)
+/data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
