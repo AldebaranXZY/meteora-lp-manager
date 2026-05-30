@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "smoke:devnet": "node scripts/smoke-devnet.mjs",
-    "probe:bitquery": "node scripts/probe-bitquery.mjs"
+    "probe:bitquery": "node scripts/probe-bitquery.mjs",
+    "test:discover": "node scripts/test-discover.mjs"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",

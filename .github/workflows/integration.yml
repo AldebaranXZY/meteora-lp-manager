@@ -1,0 +1,30 @@
+name: Integration (live)
+
+# Test de integración EN VIVO contra Bitquery (consume quota del free tier).
+# NO corre en cada push: solo manual o semanal, para no quemar quota ni volver
+# inestable el CI de build. El test se saltea solo si no hay secret.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 12 * * 1" # lunes 12:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  discover-analyze:
+    name: Discover → analyze (top 20 de ayer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Requiere el secret BITQUERY_API_KEY en el repo (Settings → Secrets → Actions).
+      # Si no está seteado, el script imprime "salteado" y termina OK.
+      - name: Test discover→analyze
+        env:
+          BITQUERY_API_KEY: ${{ secrets.BITQUERY_API_KEY }}
+        run: npm run test:discover

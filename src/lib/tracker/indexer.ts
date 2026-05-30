@@ -43,6 +43,14 @@ interface BitqueryTrade {
 /**
  * Devuelve las primeras `limit` compras del token, deduplicadas a la PRIMERA
  * compra por wallet y rankeadas por orden temporal.
+ *
+ * TODO (LIMITACIÓN conocida — la detecta scripts/test-discover.mjs):
+ * Esta query usa `DEXTrades` con `Trade.Buy.Currency = mint`. Bitquery registra
+ * las compras de pump.fun de forma INCONSISTENTE entre el lado Buy/Sell: para
+ * tokens que migraron, las compras quedan del otro lado y esta query devuelve
+ * ~0. Anda bien para tokens recién creados (aún en bonding curve). Fix pendiente:
+ * migrar a `DEXTradeByTokens` (vista token-céntrica, captura ambos lados) y pinear
+ * la dirección de "compra". Mientras tanto, el análisis es débil para tokens migrados.
  */
 export async function getEarlyBuyers(mint: string, limit: number): Promise<EarlyBuyer[]> {
   const key = process.env.BITQUERY_API_KEY;
