@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "smoke:devnet": "node scripts/smoke-devnet.mjs"
+    "smoke:devnet": "node scripts/smoke-devnet.mjs",
+    "probe:bitquery": "node scripts/probe-bitquery.mjs"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
@@ -14,6 +15,8 @@
     "@meteora-ag/dlmm": "^1.9.9",
     "@solana/spl-token": "^0.4.9",
     "@solana/web3.js": "^1.95.8",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.10.0",
     "bn.js": "^5.2.1",
     "bs58": "^5.0.0",
     "buffer": "^6.0.3",

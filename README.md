@@ -61,3 +61,28 @@ Lectura: `GET /api/token`, `/api/price`, `/api/pool`, `/api/pool/info`, `/api/ba
 Firman/mueven fondos (protegidas por `middleware.ts` cuando hay `API_SECRET`):
 `POST /api/swap/execute`, `/api/position/open`, `/api/pool/create`, `/api/damm/create`,
 `/api/airdrop` *(solo devnet)*.
+
+## Wallet Tracker (`/tracker`)
+
+Detecta grupos coordinados en pump.fun por **co-ocurrencia**: analizás varios tokens (por CA),
+baja las primeras N compras de cada uno (vía Bitquery) y rankea las wallets que reaparecen
+temprano en varios. Las de ubicuidad altísima se etiquetan 🤖 (bot/sniper) vs 🟢 (grupo). Después
+podés **monitorear** ese set con un webhook de Helius y recibir alertas cuando compran un token nuevo.
+
+Es **local-first**: corre en tu PC con SQLite (`data/tracker.db`, gitignoreado). Las alertas en vivo
+solo llegan con la PC y el túnel prendidos.
+
+**Setup:**
+1. `.env.local`: `BITQUERY_API_KEY`, `TRACKER_WEBHOOK_SECRET` (string random largo), `TRACKER_PUBLIC_URL`.
+2. `npm run dev`.
+3. Para el realtime, levantá un túnel y poné su URL en `TRACKER_PUBLIC_URL`:
+   ```
+   cloudflared tunnel --url http://localhost:3000
+   ```
+   (sin barra final, sin `/api/...`). Reiniciá el dev server para tomar la env var y dale "Monitorear".
+
+**Flujo:** abrir `/tracker` → pegar CAs y "Analizar" (varios) → ajustar umbral → "Monitorear el grupo"
+→ ver alertas en vivo. Crear pool/abrir LP siguen en el LP Manager (`/`).
+
+**Diagnóstico:** `npm run probe:bitquery` valida la conexión a Bitquery (auth + endpoint + esquema)
+de forma aislada, sin levantar la app. Lee `BITQUERY_API_KEY` de `.env.local` y nunca lo imprime.
