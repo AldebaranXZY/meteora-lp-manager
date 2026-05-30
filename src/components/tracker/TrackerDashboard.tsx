@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { shortenAddress } from "@/lib/meteora";
+import DiscoverPanel from "./DiscoverPanel";
 import type { TrackedToken, WalletRow, TrackerAlert, WalletKind } from "@/lib/tracker/types";
 
 const KIND_BADGE: Record<WalletKind, { label: string; color: string }> = {
@@ -27,6 +28,8 @@ export default function TrackerDashboard() {
 
   const [alerts, setAlerts] = useState<TrackerAlert[]>([]);
 
+  const [view, setView] = useState<"analisis" | "descubrir">("analisis");
+
   // ── Loaders ─────────────────────────────────────────────────────────────────
   const loadTokens = useCallback(async () => {
     try { const d = await (await fetch("/api/tracker/tokens")).json(); setTokens(d.tokens ?? []); } catch {}
@@ -35,6 +38,12 @@ export default function TrackerDashboard() {
   const loadWallets = useCallback(async (k: number) => {
     try { const d = await (await fetch(`/api/tracker/wallets?minTokens=${k}`)).json(); setWallets(d.wallets ?? []); } catch {}
   }, []);
+
+  const onDiscoverAdded = useCallback(() => {
+    loadTokens();
+    loadWallets(minTokens);
+    setView("analisis");
+  }, [loadTokens, loadWallets, minTokens]);
 
   useEffect(() => { loadTokens(); }, [loadTokens]);
   useEffect(() => { loadWallets(minTokens); }, [minTokens, loadWallets]);
@@ -113,7 +122,17 @@ export default function TrackerDashboard() {
         <Link href="/" className="btn-ghost" style={{ textDecoration: "none", fontSize: 12 }}>← LP Manager</Link>
       </header>
 
-      <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Tabs */}
+      <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, marginBottom: 14 }}>
+        <button className={view === "descubrir" ? "btn btn-primary" : "btn-ghost"} style={{ width: "auto" }} onClick={() => setView("descubrir")}>🔎 Descubrir</button>
+        <button className={view === "analisis" ? "btn btn-primary" : "btn-ghost"} style={{ width: "auto" }} onClick={() => setView("analisis")}>🎯 Análisis</button>
+      </div>
+
+      <div style={{ gridColumn: "1 / -1", display: view === "descubrir" ? "block" : "none" }}>
+        <DiscoverPanel onAdded={onDiscoverAdded} />
+      </div>
+
+      <div style={{ gridColumn: "1 / -1", display: view === "analisis" ? "flex" : "none", flexDirection: "column", gap: 14 }}>
 
         {/* ── Agregar / analizar token ─────────────────────────────────────────── */}
         <div className="card">

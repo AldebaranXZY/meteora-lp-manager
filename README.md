@@ -84,5 +84,11 @@ solo llegan con la PC y el túnel prendidos.
 **Flujo:** abrir `/tracker` → pegar CAs y "Analizar" (varios) → ajustar umbral → "Monitorear el grupo"
 → ver alertas en vivo. Crear pool/abrir LP siguen en el LP Manager (`/`).
 
+**Descubrir** (tab en `/tracker`): "Top de ayer" / "Antes de ayer" traen las memes **creadas ese día**
+en pump.fun (top 100 por volumen, UTC), con `ticker · volumen · mcap máx · mcap actual`. Tildás las
+que te interesan y "Agregar a análisis" las manda al flujo de co-ocurrencia. Sumá varias de distintos
+días para que aparezcan las wallets recurrentes.
+
 **Diagnóstico:** `npm run probe:bitquery` valida la conexión a Bitquery (auth + endpoint + esquema)
-de forma aislada, sin levantar la app. Lee `BITQUERY_API_KEY` de `.env.local` y nunca lo imprime.
+sin levantar la app; `npm run probe:bitquery -- --discover` prueba la query de top-del-día. Lee
+`BITQUERY_API_KEY` de `.env.local` y nunca lo imprime.
