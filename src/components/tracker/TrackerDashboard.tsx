@@ -2,15 +2,28 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { shortenAddress } from "@/lib/meteora";
+import { shortenAddress, formatUSD } from "@/lib/meteora";
 import DiscoverPanel from "./DiscoverPanel";
-import type { TrackedToken, WalletRow, TrackerAlert, WalletKind } from "@/lib/tracker/types";
+import type { TrackedToken, WalletRow, TrackerAlert, WalletKind, TokenInfo } from "@/lib/tracker/types";
 
 const KIND_BADGE: Record<WalletKind, { label: string; color: string }> = {
   group:            { label: "🟢 grupo",   color: "var(--accent)" },
   universal_sniper: { label: "🤖 bot",      color: "var(--warn)" },
   unknown:          { label: "· s/d",       color: "var(--ink-3)" },
 };
+
+function fmtAge(ms: number | null): string {
+  if (!ms) return "—";
+  const h = (Date.now() - ms) / 3_600_000;
+  return h < 24 ? `${Math.max(1, Math.round(h))}h` : `${Math.round(h / 24)}d`;
+}
+function socialLabel(type: string): string {
+  const t = type.toLowerCase();
+  if (t.includes("twitter") || t === "x") return "𝕏";
+  if (t.includes("telegram")) return "TG";
+  if (t.includes("discord")) return "DC";
+  return "↗";
+}
 
 export default function TrackerDashboard() {
   const [tokens, setTokens] = useState<TrackedToken[]>([]);
@@ -29,6 +42,7 @@ export default function TrackerDashboard() {
   const [alerts, setAlerts] = useState<TrackerAlert[]>([]);
 
   const [view, setView] = useState<"analisis" | "descubrir">("analisis");
+  const [tokenInfo, setTokenInfo] = useState<Record<string, TokenInfo>>({});
 
   // ── Loaders ─────────────────────────────────────────────────────────────────
   const loadTokens = useCallback(async () => {
@@ -46,6 +60,18 @@ export default function TrackerDashboard() {
   }, [loadTokens, loadWallets, minTokens]);
 
   useEffect(() => { loadTokens(); }, [loadTokens]);
+
+  // Enriquecimiento DexScreener (batch) cuando cambia la lista de tokens trackeados.
+  const tokenMints = tokens.map((t) => t.mint).join(",");
+  useEffect(() => {
+    if (!tokenMints) { setTokenInfo({}); return; }
+    let cancelled = false;
+    fetch(`/api/tracker/token-info?mints=${tokenMints}`)
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled && d.info) setTokenInfo(d.info); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tokenMints]);
   useEffect(() => { loadWallets(minTokens); }, [minTokens, loadWallets]);
 
   // Poll de alertas cada 5s
@@ -149,12 +175,36 @@ export default function TrackerDashboard() {
           </div>
           {error && <div className="banner" style={{ marginTop: 12, color: "var(--danger)", borderColor: "color-mix(in oklab, var(--danger) 28%, transparent)", background: "color-mix(in oklab, var(--danger) 10%, transparent)" }}>{error}</div>}
           {tokens.length > 0 && (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}>
-              {tokens.map((t) => (
-                <span key={t.mint} className="chip" title={t.mint}>
-                  {t.symbol ?? shortenAddress(t.mint)} {t.buyersFetched ? "✓" : "…"}
-                </span>
-              ))}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+              {tokens.map((t) => {
+                const info = tokenInfo[t.mint];
+                const totalTx = info ? info.buys24h + info.sells24h : 0;
+                const buyPct = totalTx > 0 ? Math.round((info!.buys24h / totalTx) * 100) : null;
+                return (
+                  <div key={t.mint} style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(255,255,255,.03)", fontFamily: "var(--mono)", fontSize: 11 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <a href={`https://solscan.io/token/${t.mint}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink)", textDecoration: "none", fontWeight: 600 }}>
+                        {t.symbol ?? shortenAddress(t.mint)}
+                      </a>
+                      <span title={t.buyersFetched ? "analizado" : "sin analizar"} style={{ color: t.buyersFetched ? "var(--accent)" : "var(--ink-3)" }}>{t.buyersFetched ? "✓" : "…"}</span>
+                      {info?.dexes.map((d) => <span key={d} className="chip" style={{ padding: "1px 6px", fontSize: 9, cursor: "default" }}>{d}</span>)}
+                      <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                        {info?.socials.slice(0, 3).map((s, i) => <a key={i} href={s.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink-3)", textDecoration: "none" }}>{socialLabel(s.type)}</a>)}
+                        {info?.websites[0] && <a href={info.websites[0].url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink-3)" }}>web</a>}
+                      </span>
+                    </div>
+                    {info && (info.mcap > 0 || info.volume24h > 0) && (
+                      <div style={{ display: "flex", gap: 12, marginTop: 5, color: "var(--ink-3)", flexWrap: "wrap" }}>
+                        <span>mcap {formatUSD(info.mcap)}</span>
+                        <span>vol24 {formatUSD(info.volume24h)}</span>
+                        {buyPct !== null && <span style={{ color: buyPct >= 50 ? "var(--accent)" : "var(--danger)" }}>{buyPct}% buys</span>}
+                        <span style={{ color: info.priceChange24h >= 0 ? "var(--accent)" : "var(--danger)" }}>{info.priceChange24h >= 0 ? "+" : ""}{info.priceChange24h.toFixed(1)}%</span>
+                        <span>edad {fmtAge(info.pairCreatedAt)}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
