@@ -44,6 +44,21 @@ export interface DiscoveredToken {
   createdAt: string | null;
 }
 
+/** Enriquecimiento de un token vía DexScreener (momentum + links). */
+export interface TokenInfo {
+  mint: string;
+  mcap: number;
+  liquidityUsd: number;
+  volume24h: number;
+  buys24h: number;
+  sells24h: number;
+  priceChange24h: number;
+  dexes: string[];
+  pairCreatedAt: number | null;   // ms epoch del par más viejo
+  socials: { type: string; url: string }[];
+  websites: { label: string | null; url: string }[];
+}
+
 export interface TrackerAlert {
   id: number;
   wallet: string;

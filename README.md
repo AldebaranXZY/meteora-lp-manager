@@ -70,6 +70,9 @@ wallets que reaparecen temprano en varios. Las de ubicuidad altísima se etiquet
 🟢 (grupo). Después podés **monitorear** ese set con un webhook de Helius y recibir alertas cuando
 compran un token nuevo. El **discover** (tokens trending) usa Jupiter (gratis). Sin indexer pago.
 
+Cada token trackeado muestra una card enriquecida vía **DexScreener** (gratis, keyless): mcap,
+volumen 24h, presión compra/venta, % cambio, en qué DEX está, edad del par y links (X/web) si los tiene.
+
 Es **local-first**: corre en tu PC con SQLite (`data/tracker.db`, gitignoreado). Las alertas en vivo
 solo llegan con la PC y el túnel prendidos.
 
