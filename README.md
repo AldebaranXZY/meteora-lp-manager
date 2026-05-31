@@ -65,15 +65,17 @@ Firman/mueven fondos (protegidas por `middleware.ts` cuando hay `API_SECRET`):
 ## Wallet Tracker (`/tracker`)
 
 Detecta grupos coordinados en pump.fun por **co-ocurrencia**: analizás varios tokens (por CA),
-baja las primeras N compras de cada uno (vía Bitquery) y rankea las wallets que reaparecen
-temprano en varios. Las de ubicuidad altísima se etiquetan 🤖 (bot/sniper) vs 🟢 (grupo). Después
-podés **monitorear** ese set con un webhook de Helius y recibir alertas cuando compran un token nuevo.
+baja las primeras N compras de cada uno (on-chain vía **Helius**, bonding-curve PDA) y rankea las
+wallets que reaparecen temprano en varios. Las de ubicuidad altísima se etiquetan 🤖 (bot/sniper) vs
+🟢 (grupo). Después podés **monitorear** ese set con un webhook de Helius y recibir alertas cuando
+compran un token nuevo. El **discover** (tokens trending) usa Jupiter (gratis). Sin indexer pago.
 
 Es **local-first**: corre en tu PC con SQLite (`data/tracker.db`, gitignoreado). Las alertas en vivo
 solo llegan con la PC y el túnel prendidos.
 
 **Setup:**
-1. `.env.local`: `BITQUERY_API_KEY`, `TRACKER_WEBHOOK_SECRET` (string random largo), `TRACKER_PUBLIC_URL`.
+1. `.env.local`: `HELIUS_API_KEY` (early buyers + realtime), `TRACKER_WEBHOOK_SECRET` (string random largo),
+   `TRACKER_PUBLIC_URL`. El discover (Jupiter) no necesita key.
 2. `npm run dev`.
 3. Para el realtime, levantá un túnel y poné su URL en `TRACKER_PUBLIC_URL`:
    ```
@@ -84,17 +86,13 @@ solo llegan con la PC y el túnel prendidos.
 **Flujo:** abrir `/tracker` → pegar CAs y "Analizar" (varios) → ajustar umbral → "Monitorear el grupo"
 → ver alertas en vivo. Crear pool/abrir LP siguen en el LP Manager (`/`).
 
-**Descubrir** (tab en `/tracker`): "Top de ayer" / "Antes de ayer" traen las memes **creadas ese día**
-en pump.fun (top 100 por volumen, UTC), con `ticker · volumen · mcap máx · mcap actual`. Tildás las
-que te interesan y "Agregar a análisis" las manda al flujo de co-ocurrencia. Sumá varias de distintos
-días para que aparezcan las wallets recurrentes.
+**Descubrir** (tab en `/tracker`): modos **"Top 24h" · "Trending" · "Recién creadas"** traen las memes
+de pump.fun más activas vía **Jupiter Token API V2** (gratis, sin API key), con
+`ticker · vol 24h · mcap · holders · organic score · dev`. Tildás las que te interesan y "Agregar a
+análisis" las manda al flujo de co-ocurrencia. (Jupiter da ventanas móviles, no días históricos.)
 
-**Diagnóstico:** `npm run probe:bitquery` valida la conexión a Bitquery (auth + endpoint + esquema)
-sin levantar la app; `npm run probe:bitquery -- --discover` prueba la query de top-del-día. Lee
-`BITQUERY_API_KEY` de `.env.local` y nunca lo imprime.
-
-**Test de integración (local):** `npm run test:discover` toma el top 20 de ayer y corre el analyze
-sobre cada uno, verificando el pipeline contra datos reales. Corre **solo local** (nunca en CI: usa
-tu key y consume quota) y se engancha como **git hook de pre-push** — antes de cada `git push` se
-ejecuta solo. El hook (`.githooks/pre-push`) se activa con `npm install` (postinstall setea
-`core.hooksPath`); si no hay key, se saltea. Para forzar un push sin correrlo: `git push --no-verify`.
+**Test de integración (local):** `npm run test:discover` trae el top de pump.fun (Jupiter) y corre el
+analyze (early buyers vía Helius) sobre los primeros, verificando el pipeline contra datos reales.
+Corre **solo local** (Helius usa quota) y se engancha como **git hook de pre-push** — antes de cada
+`git push` se ejecuta solo. El hook (`.githooks/pre-push`) se activa con `npm install` (postinstall
+setea `core.hooksPath`); si no hay `HELIUS_API_KEY`, se saltea. Forzar push sin correrlo: `git push --no-verify`.

@@ -36,11 +36,12 @@ export interface DiscoveredToken {
   mint: string;
   symbol: string | null;
   name: string | null;
-  volumeUsd: number;
-  /** market cap pico del día (maxPrice × supply 1e9) */
-  mcapMax: number;
-  /** market cap actual (último precio × supply 1e9) */
-  mcapNow: number;
+  volumeUsd: number;        // stats24h: buyVolume + sellVolume
+  mcap: number;
+  holders: number;
+  organicScore: number;     // 0–100, anti wash-trade (Jupiter)
+  dev: string | null;       // wallet del creador del token
+  createdAt: string | null;
 }
 
 export interface TrackerAlert {
