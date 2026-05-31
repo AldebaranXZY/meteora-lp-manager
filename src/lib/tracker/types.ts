@@ -32,6 +32,17 @@ export interface WalletRow {
   note: string | null;
 }
 
+export interface DiscoveredToken {
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  volumeUsd: number;
+  /** market cap pico del día (maxPrice × supply 1e9) */
+  mcapMax: number;
+  /** market cap actual (último precio × supply 1e9) */
+  mcapNow: number;
+}
+
 export interface TrackerAlert {
   id: number;
   wallet: string;

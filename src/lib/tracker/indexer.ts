@@ -1,79 +1,111 @@
 import type { EarlyBuyer } from "./types";
-import { PUMP_FUN_PROGRAM } from "./pumpfun";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { PUMP_FUN_PROGRAM, type HeliusEnhancedTx } from "./pumpfun";
 
-// ─── Indexer: primeras compras de un token pump.fun (Bitquery) ───────────────
-// Detrás de una interfaz simple para poder swappear a Moralis/otro después.
+// ─── Early buyers de un token (on-chain vía Helius) ──────────────────────────
+// Antes esto usaba Bitquery, pero el EAP free tier cuenta los trades pero solo
+// deja ENUMERAR ~8-12 filas individuales por token → perdía los early buyers de
+// tokens activos/migrados (lo detectó scripts/test-discover.mjs). Helius da la
+// historia on-chain completa y determinística.
 //
-// NOTA: el endpoint EAP de Bitquery (Solana) usa OAuth Bearer. El esquema exacto
-// de DEXTrades puede variar entre versiones — si al enchufar la key real algún
-// campo no matchea, ajustar la query/mapeo acá (es el único lugar que toca Bitquery).
+// Estrategia: paginar getSignaturesForAddress(mint) hasta las firmas más viejas,
+// parsear desde el origen con la Enhanced Transactions API y quedarse con las
+// primeras `limit` COMPRAS pump.fun (wallet recibe el token y paga SOL).
 
-const BITQUERY_EAP = "https://streaming.bitquery.io/eap";
+const MAX_PAGES = 30;        // tope de paginación (30k firmas) para acotar costo
+const ENHANCED_BATCH = 100;  // máx por request de la Enhanced API
 
-const QUERY = `
-query EarlyBuyers($mint: String!, $limit: Int!) {
-  Solana {
-    DEXTrades(
-      limit: { count: $limit }
-      orderBy: { ascending: Block_Time }
-      where: {
-        Trade: { Buy: { Currency: { MintAddress: { is: $mint } } } }
-        Instruction: { Program: { Address: { is: "${PUMP_FUN_PROGRAM}" } } }
-      }
-    ) {
-      Block { Time }
-      Transaction { Signature }
-      Trade {
-        Buy { Account { Address } Amount }
-        Sell { Amount }
-      }
-    }
-  }
-}`;
+function heliusKey(): string {
+  const k = process.env.HELIUS_API_KEY;
+  if (!k) throw new Error("HELIUS_API_KEY no configurada en .env.local");
+  return k;
+}
 
-interface BitqueryTrade {
-  Block?: { Time?: string };
-  Transaction?: { Signature?: string };
-  Trade?: {
-    Buy?: { Account?: { Address?: string }; Amount?: string };
-    Sell?: { Amount?: string };
-  };
+async function fetchEnhanced(signatures: string[]): Promise<HeliusEnhancedTx[]> {
+  const res = await fetch(`https://api.helius.xyz/v0/transactions?api-key=${heliusKey()}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ transactions: signatures }),
+  });
+  if (!res.ok) throw new Error(`Helius enhanced ${res.status}: ${await res.text().catch(() => "")}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
 }
 
 /**
- * Devuelve las primeras `limit` compras del token, deduplicadas a la PRIMERA
- * compra por wallet y rankeadas por orden temporal.
+ * Si el tx es una compra del `mint`, devuelve el comprador.
+ * Criterio (validado contra datos reales): el feePayer RECIBIÓ el token y PAGÓ SOL.
+ * No filtramos por type/source: Helius etiqueta muchas compras de la bonding curve
+ * como TRANSFER/SYSTEM_PROGRAM, no como SWAP/PUMP_FUN.
+ */
+function pumpBuyerOf(tx: HeliusEnhancedTx, mint: string): { wallet: string; solIn: number; tokensOut: number } | null {
+  const buyer = tx.feePayer;
+  if (!buyer) return null;
+  const received = (tx.tokenTransfers ?? []).find((tt) => tt.mint === mint && tt.toUserAccount === buyer);
+  if (!received) return null;
+  const solIn = (tx.nativeTransfers ?? [])
+    .filter((n) => n.fromUserAccount === buyer)
+    .reduce((s, n) => s + (n.amount ?? 0), 0) / 1e9;
+  if (solIn <= 0) return null; // pagó SOL → compra real (descarta transfers/airdrops)
+  return { wallet: buyer, solIn, tokensOut: received.tokenAmount ?? 0 };
+}
+
+/**
+ * Primeras `limit` compras del token, deduplicadas a la PRIMERA compra por wallet
+ * y rankeadas cronológicamente.
  */
 export async function getEarlyBuyers(mint: string, limit: number): Promise<EarlyBuyer[]> {
-  const key = process.env.BITQUERY_API_KEY;
-  if (!key) throw new Error("BITQUERY_API_KEY no configurada en .env.local");
+  // pump.fun es MAINNET-only → conexión mainnet fija, sin importar
+  // NEXT_PUBLIC_SOLANA_CLUSTER (que es para el toggle devnet del LP manager).
+  const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${heliusKey()}`, "confirmed");
+  const mintPk = new PublicKey(mint);
 
-  const res = await fetch(BITQUERY_EAP, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ query: QUERY, variables: { mint, limit } }),
-  });
-  if (!res.ok) throw new Error(`Bitquery ${res.status}: ${await res.text().catch(() => "")}`);
+  // Firmas de la BONDING CURVE PDA (no del mint): ahí están solo las compras/ventas
+  // de pump.fun, sin el ruido de transfers/ATAs del mint.
+  const [bondingCurve] = PublicKey.findProgramAddressSync(
+    [Buffer.from("bonding-curve"), mintPk.toBuffer()],
+    new PublicKey(PUMP_FUN_PROGRAM)
+  );
 
-  const json = await res.json();
-  if (json.errors) throw new Error(`Bitquery: ${JSON.stringify(json.errors)}`);
+  // 1. Paginar firmas hasta las más viejas (la API devuelve nuevas→viejas).
+  let before: string | undefined;
+  const sigs: { signature: string; blockTime: number }[] = [];
+  for (let p = 0; p < MAX_PAGES; p++) {
+    const batch = await connection.getSignaturesForAddress(
+      bondingCurve,
+      before ? { limit: 1000, before } : { limit: 1000 }
+    );
+    if (batch.length === 0) break;
+    for (const s of batch) sigs.push({ signature: s.signature, blockTime: s.blockTime ?? 0 });
+    if (batch.length < 1000) break;
+    before = batch[batch.length - 1].signature;
+  }
+  const chrono = sigs.reverse(); // viejas → nuevas
 
-  const trades: BitqueryTrade[] = json?.data?.Solana?.DEXTrades ?? [];
-
-  const seen = new Set<string>();
+  // 2. Parsear desde el origen hasta juntar `limit` compradores únicos.
   const buyers: EarlyBuyer[] = [];
-  for (const t of trades) {
-    const wallet = t.Trade?.Buy?.Account?.Address;
-    if (!wallet || seen.has(wallet)) continue;
-    seen.add(wallet);
-    buyers.push({
-      wallet,
-      rank: buyers.length + 1,
-      solIn: Number(t.Trade?.Sell?.Amount ?? 0),
-      tokensOut: Number(t.Trade?.Buy?.Amount ?? 0),
-      blockTime: Math.floor(new Date(t.Block?.Time ?? 0).getTime() / 1000),
-      signature: t.Transaction?.Signature ?? "",
-    });
+  const seen = new Set<string>();
+  for (let i = 0; i < chrono.length && buyers.length < limit; i += ENHANCED_BATCH) {
+    const slice = chrono.slice(i, i + ENHANCED_BATCH);
+    const parsed = await fetchEnhanced(slice.map((s) => s.signature));
+    const bySig = new Map(parsed.map((t) => [t.signature, t]));
+    // Recorrer en orden cronológico (la Enhanced API puede devolver desordenado).
+    for (const s of slice) {
+      const tx = bySig.get(s.signature);
+      if (!tx) continue;
+      const b = pumpBuyerOf(tx, mint);
+      if (!b || seen.has(b.wallet)) continue;
+      seen.add(b.wallet);
+      buyers.push({
+        wallet: b.wallet,
+        rank: buyers.length + 1,
+        solIn: b.solIn,
+        tokensOut: b.tokensOut,
+        blockTime: tx.timestamp ?? s.blockTime,
+        signature: s.signature,
+      });
+      if (buyers.length >= limit) break;
+    }
   }
   return buyers;
 }

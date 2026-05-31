@@ -84,5 +84,17 @@ solo llegan con la PC y el túnel prendidos.
 **Flujo:** abrir `/tracker` → pegar CAs y "Analizar" (varios) → ajustar umbral → "Monitorear el grupo"
 → ver alertas en vivo. Crear pool/abrir LP siguen en el LP Manager (`/`).
 
+**Descubrir** (tab en `/tracker`): "Top de ayer" / "Antes de ayer" traen las memes **creadas ese día**
+en pump.fun (top 100 por volumen, UTC), con `ticker · volumen · mcap máx · mcap actual`. Tildás las
+que te interesan y "Agregar a análisis" las manda al flujo de co-ocurrencia. Sumá varias de distintos
+días para que aparezcan las wallets recurrentes.
+
 **Diagnóstico:** `npm run probe:bitquery` valida la conexión a Bitquery (auth + endpoint + esquema)
-de forma aislada, sin levantar la app. Lee `BITQUERY_API_KEY` de `.env.local` y nunca lo imprime.
+sin levantar la app; `npm run probe:bitquery -- --discover` prueba la query de top-del-día. Lee
+`BITQUERY_API_KEY` de `.env.local` y nunca lo imprime.
+
+**Test de integración (local):** `npm run test:discover` toma el top 20 de ayer y corre el analyze
+sobre cada uno, verificando el pipeline contra datos reales. Corre **solo local** (nunca en CI: usa
+tu key y consume quota) y se engancha como **git hook de pre-push** — antes de cada `git push` se
+ejecuta solo. El hook (`.githooks/pre-push`) se activa con `npm install` (postinstall setea
+`core.hooksPath`); si no hay key, se saltea. Para forzar un push sin correrlo: `git push --no-verify`.

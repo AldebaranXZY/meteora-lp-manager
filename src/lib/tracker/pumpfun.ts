@@ -11,6 +11,7 @@ export interface HeliusEnhancedTx {
   timestamp?: number;
   source?: string;
   type?: string;
+  feePayer?: string;
   tokenTransfers?: HeliusTokenTransfer[];
   nativeTransfers?: HeliusNativeTransfer[];
   instructions?: HeliusInstruction[];
