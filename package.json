@@ -7,7 +7,6 @@
     "build": "next build",
     "start": "next start",
     "smoke:devnet": "node scripts/smoke-devnet.mjs",
-    "probe:bitquery": "node scripts/probe-bitquery.mjs",
     "test:discover": "node scripts/test-discover.mjs",
     "postinstall": "node -e \"try{require('child_process').execSync('git config core.hooksPath .githooks')}catch(e){}\""
   },

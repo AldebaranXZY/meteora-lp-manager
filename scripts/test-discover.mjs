@@ -1,20 +1,18 @@
 #!/usr/bin/env node
 // Test de integración (vivo) del pipeline discover→analyze:
-//   1) discover (Bitquery): top de ayer por volumen
+//   1) discover (Jupiter, GRATIS keyless): top memes pump.fun por volumen 24h
 //   2) early buyers (Helius, bonding-curve PDA): analiza el top 3 y exige buyers > 0
 //
-// Espeja la lógica de src/lib/tracker/{discover,indexer}.ts — si tocás esas
-// queries, actualizá acá también. Corre SOLO local (usa tus keys + quota).
-// Se saltea (exit 0) si falta alguna key. Forzar push sin correrlo: git push --no-verify.
+// Espeja la lógica de src/lib/tracker/{discover,indexer}.ts. Corre SOLO local
+// (Helius usa quota). Se saltea (exit 0) si falta HELIUS_API_KEY.
+// Forzar push sin correrlo: git push --no-verify.
 
 import { readFileSync } from "node:fs";
 import { PublicKey } from "@solana/web3.js";
 
-const PUMP_STR = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-const PUMP = new PublicKey(PUMP_STR);
-const EAP = "https://streaming.bitquery.io/eap";
-const TOP_N = 10;       // discover
-const ANALYZE_N = 3;    // cuántos del top analizar con Helius
+const PUMP = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+const JUP = "https://lite-api.jup.ag/tokens/v2";
+const ANALYZE_N = 3;
 const BUYERS_LIMIT = 100;
 
 function envVal(name) {
@@ -23,21 +21,13 @@ function envVal(name) {
   return (txt.match(new RegExp(`^\\s*${name}\\s*=\\s*(.+)\\s*$`, "m"))?.[1] ?? "").trim().replace(/^["']|["']$/g, "");
 }
 
-const BQ = envVal("BITQUERY_API_KEY");
 const HK = envVal("HELIUS_API_KEY");
-if (!BQ || !HK) {
-  console.log("⚠ Falta BITQUERY_API_KEY o HELIUS_API_KEY — test salteado (OK).");
-  process.exit(0);
-}
+if (!HK) { console.log("⚠ Falta HELIUS_API_KEY — test salteado (OK)."); process.exit(0); }
 const RPC = `https://mainnet.helius-rpc.com/?api-key=${HK}`;
 
 let failures = 0;
 const fail = (m) => { console.log(`  ✗ ${m}`); failures++; };
 
-async function bitquery(q) {
-  const r = await fetch(EAP, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${BQ}` }, body: JSON.stringify({ query: q }) });
-  const j = await r.json(); if (j.errors) throw new Error(`Bitquery: ${JSON.stringify(j.errors).slice(0, 200)}`); return j?.data?.Solana ?? {};
-}
 async function rpc(method, params) {
   const r = await fetch(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
   const j = await r.json(); if (j.error) throw new Error(JSON.stringify(j.error)); return j.result;
@@ -70,27 +60,23 @@ async function earlyBuyers(mint, limit) {
 }
 
 try {
-  // 1) Discover top de ayer (Bitquery).
-  const now = new Date();
-  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const since = new Date(start - 86_400_000).toISOString(), till = new Date(start).toISOString();
-  const q = `{ Solana { DEXTradeByTokens(where:{Trade:{Dex:{ProgramAddress:{is:"${PUMP_STR}"}}},Block:{Time:{since:"${since}",till:"${till}"}}}, orderBy:{descendingByField:"v"}, limit:{count:${TOP_N}}) { Trade { Currency { MintAddress Symbol } } v: sum(of: Trade_Side_AmountInUSD) } } }`;
-  const top = (await bitquery(q)).DEXTradeByTokens ?? [];
-  console.log(`Discover: ${top.length} tokens (top de ayer)`);
-  if (top.length === 0) fail("discover devolvió 0 tokens");
+  // 1) Discover (Jupiter, keyless): top memes pump.fun por volumen 24h.
+  const res = await fetch(`${JUP}/toptraded/24h?limit=100`);
+  if (!res.ok) throw new Error(`Jupiter ${res.status}`);
+  const arr = await res.json();
+  const pump = (Array.isArray(arr) ? arr : []).filter((t) => typeof t.id === "string" && t.id.endsWith("pump"));
+  console.log(`Discover (Jupiter): ${pump.length} memes pump.fun en top traded 24h`);
+  if (pump.length === 0) fail("Jupiter no devolvió tokens pump.fun");
 
   // 2) Analizar el top N con Helius — exigir buyers > 0.
   let zeros = 0;
-  for (const t of top.slice(0, ANALYZE_N)) {
-    const mint = t?.Trade?.Currency?.MintAddress;
-    const sym = t?.Trade?.Currency?.Symbol || mint?.slice(0, 6);
-    if (!mint) { fail("token sin mint"); continue; }
-    const n = await earlyBuyers(mint, BUYERS_LIMIT);
-    console.log(`  ${n > 0 ? "✓" : "✗"} ${sym} — ${n} early buyers`);
-    if (n === 0) { zeros++; fail(`${sym} devolvió 0 early buyers (¿se rompió getEarlyBuyers?)`); }
+  for (const t of pump.slice(0, ANALYZE_N)) {
+    const n = await earlyBuyers(t.id, BUYERS_LIMIT);
+    console.log(`  ${n > 0 ? "✓" : "✗"} ${t.symbol || t.id.slice(0, 6)} — ${n} early buyers`);
+    if (n === 0) { zeros++; fail(`${t.symbol} devolvió 0 early buyers (¿se rompió getEarlyBuyers?)`); }
   }
 
-  console.log(`\n${failures === 0 ? "✓ OK" : "✗ FALLÓ"} — discover ${top.length}, analizados ${ANALYZE_N}, ${zeros} en cero, ${failures} fallas`);
+  console.log(`\n${failures === 0 ? "✓ OK" : "✗ FALLÓ"} — discover ${pump.length}, analizados ${ANALYZE_N}, ${zeros} en cero, ${failures} fallas`);
   process.exit(failures === 0 ? 0 : 1);
 } catch (e) {
   console.error(`✗ Error fatal: ${e instanceof Error ? e.message : e}`);

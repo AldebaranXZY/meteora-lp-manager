@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTopCreatedTokens } from "@/lib/tracker/discover";
+import { getTopTokens, type DiscoverMode } from "@/lib/tracker/discover";
 
 export const runtime = "nodejs";
 
-// GET /api/tracker/discover?day=1|2  (1 = ayer, 2 = antes de ayer)
-// Top 100 memecoins creadas ese día en pump.fun, por volumen.
+const MODES: DiscoverMode[] = ["top24h", "trending", "recent"];
+
+// GET /api/tracker/discover?mode=top24h|trending|recent
+// Top memecoins de pump.fun vía Jupiter (gratis).
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
-    const day = request.nextUrl.searchParams.get("day") === "2" ? 2 : 1;
-    const tokens = await getTopCreatedTokens(day);
-    return NextResponse.json({ day, tokens });
+    const raw = request.nextUrl.searchParams.get("mode");
+    const mode: DiscoverMode = MODES.includes(raw as DiscoverMode) ? (raw as DiscoverMode) : "top24h";
+    const tokens = await getTopTokens(mode);
+    return NextResponse.json({ mode, tokens });
   } catch (err: unknown) {
     console.error("[tracker/discover]", err);
     return NextResponse.json({ error: err instanceof Error ? err.message : "Error" }, { status: 500 });
