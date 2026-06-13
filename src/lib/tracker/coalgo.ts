@@ -9,7 +9,7 @@
 // coinciden en tokens populares. Acá se calcula la matriz pairwise, se filtra por
 // significancia (lift) y se agrupan por componentes conexos.
 
-import type { WalletKind } from "./types";
+import type { WalletKind, TokenOutcome } from "./types";
 
 export interface BuyerRow { token: string; wallet: string; rank: number; blockTime: number }
 export interface WalletAgg { wallet: string; tokensCount: number; firstSeen: number | null }
@@ -139,4 +139,49 @@ export function classify(
   if (totalTokens >= opts.universalMinTokens && ratio >= opts.universalRatio) return "universal_sniper";
   if (totalTokens >= opts.minSupportTokens && groupId !== null) return "group";
   return "unknown";
+}
+
+// ─── Win-rate: traders que aciertan (la mitad "comportamental" de profitabilidad) ─
+
+export interface OutcomeOpts {
+  winnerMinMcap: number; winnerMinLiq: number; rugMaxLiq: number; rugMaxMcap: number;
+}
+
+/**
+ * Clasifica el desenlace de un token con data de DexScreener. 'winner' = migró a
+ * un AMM real con liquidez o mcap alto (graduó); 'rug' = liquidez/mcap muertos;
+ * 'pending' = todavía en la curva, o sin data (no concluir). NO usa precio para
+ * adivinar PnL — es una señal de desenlace, no de ganancia.
+ */
+export function classifyOutcome(
+  info: { mcap: number; liquidityUsd: number; volume24h: number; dexes: string[] }, opts: OutcomeOpts
+): TokenOutcome {
+  if (info.mcap === 0 && info.liquidityUsd === 0 && info.volume24h === 0) return "pending"; // sin data
+  const onRealDex = info.dexes.some((d) => { const x = d.toLowerCase(); return x !== "pumpfun" && x !== "pump"; });
+  if (info.mcap >= opts.winnerMinMcap || (onRealDex && info.liquidityUsd >= opts.winnerMinLiq)) return "winner";
+  if (info.liquidityUsd < opts.rugMaxLiq && info.mcap < opts.rugMaxMcap) return "rug";
+  return "pending";
+}
+
+export interface WinRate { wins: number; plays: number; winRate: number }
+
+/**
+ * Win-rate por wallet: de los tokens que compró temprano y YA tienen desenlace
+ * decidido (winner|rug), cuántos ganaron. Los 'pending' no cuentan (todavía no
+ * son ni acierto ni fallo).
+ */
+export function computeWinRates(
+  plays: { wallet: string; token: string }[], outcomes: Map<string, TokenOutcome>
+): Map<string, WinRate> {
+  const acc = new Map<string, WinRate>();
+  for (const p of plays) {
+    const o = outcomes.get(p.token);
+    if (o !== "winner" && o !== "rug") continue; // pending/sin desenlace no cuenta
+    let e = acc.get(p.wallet);
+    if (!e) { e = { wins: 0, plays: 0, winRate: 0 }; acc.set(p.wallet, e); }
+    e.plays++;
+    if (o === "winner") e.wins++;
+  }
+  for (const e of acc.values()) e.winRate = e.plays ? e.wins / e.plays : 0;
+  return acc;
 }

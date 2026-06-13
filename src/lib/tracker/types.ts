@@ -1,5 +1,8 @@
 // ─── Tracker — tipos compartidos (API ↔ UI) ─────────────────────────────────
 
+/** Desenlace de un token: ganó (migró/graduó), rugueó (muerto) o pendiente. */
+export type TokenOutcome = "winner" | "rug" | "pending";
+
 export interface TrackedToken {
   mint: string;
   symbol: string | null;
@@ -8,6 +11,7 @@ export interface TrackedToken {
   analyzedAt: number | null;
   buyersFetched: number;
   stats: AnalyzeStats | null;   // diagnóstico del último análisis (truncado/migrado/cobertura)
+  outcome: TokenOutcome;        // desenlace para win-rate (winner/rug/pending)
 }
 
 export interface EarlyBuyer {
@@ -55,6 +59,7 @@ export interface RecomputeStats {
   groupsFound: number;        // clusters coordinados detectados
   largestGroupSize: number;
   medianLift: number;         // lift mediano de los pares retenidos
+  profitableWallets: number;  // wallets con win-rate ≥50% (≥2 tokens decididos)
   elapsedMs: number;
 }
 
@@ -72,6 +77,9 @@ export interface WalletRow {
   note: string | null;
   groupId: number | null;          // cluster coordinado al que pertenece (o null)
   cooccurrenceScore: number;       // peso de la arista más fuerte (ranking)
+  wins: number;                    // tokens early-comprados que ganaron
+  plays: number;                   // tokens con desenlace decidido (winner|rug)
+  winRate: number;                 // wins / plays (0 si plays=0)
 }
 
 /** Resumen de un cluster coordinado para la vista de grupos. */
@@ -91,6 +99,7 @@ export interface WalletTokenHit {
   rank: number;
   solIn: number;
   blockTime: number;
+  outcome: TokenOutcome;           // desenlace del token (winner/rug/pending)
 }
 export interface CoBuyer {
   wallet: string;
@@ -104,6 +113,9 @@ export interface WalletDetail {
   tokensCount: number;
   ubiquityRatio: number;
   groupId: number | null;
+  wins: number;
+  plays: number;
+  winRate: number;
   tokens: WalletTokenHit[];
   coBuyers: CoBuyer[];
 }
