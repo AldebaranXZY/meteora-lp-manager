@@ -4,12 +4,18 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { shortenAddress, formatUSD } from "@/lib/meteora";
 import DiscoverPanel from "./DiscoverPanel";
-import type { TrackedToken, WalletRow, TrackerAlert, WalletKind, TokenInfo, GroupSummary, WalletDetail, RecomputeStats } from "@/lib/tracker/types";
+import type { TrackedToken, WalletRow, TrackerAlert, WalletKind, TokenInfo, GroupSummary, WalletDetail, RecomputeStats, TokenOutcome } from "@/lib/tracker/types";
 
 const KIND_BADGE: Record<WalletKind, { label: string; color: string }> = {
   group:            { label: "🟢 grupo",   color: "var(--accent)" },
   universal_sniper: { label: "🤖 bot",      color: "var(--warn)" },
   unknown:          { label: "· s/d",       color: "var(--ink-3)" },
+};
+
+const OUTCOME_BADGE: Record<TokenOutcome, { label: string; color: string }> = {
+  winner:  { label: "ganó",  color: "var(--accent)" },
+  rug:     { label: "rug",   color: "var(--danger)" },
+  pending: { label: "abierto", color: "var(--ink-3)" },
 };
 
 function fmtAge(ms: number | null): string {
@@ -35,6 +41,7 @@ export default function TrackerDashboard() {
   const [minTokens, setMinTokens] = useState(2);
   const [wallets, setWallets] = useState<WalletRow[]>([]);
   const [showBots, setShowBots] = useState(true);
+  const [onlyProfitable, setOnlyProfitable] = useState(false);
 
   const [monitoring, setMonitoring] = useState(false);
   const [monitorMsg, setMonitorMsg] = useState<string | null>(null);
@@ -167,7 +174,9 @@ export default function TrackerDashboard() {
     }
   };
 
-  const visibleWallets = showBots ? wallets : wallets.filter((w) => w.kind !== "universal_sniper");
+  const visibleWallets = wallets
+    .filter((w) => showBots || w.kind !== "universal_sniper")
+    .filter((w) => !onlyProfitable || (w.plays >= 2 && w.winRate >= 0.5));
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -225,6 +234,9 @@ export default function TrackerDashboard() {
                       )}
                       {t.stats?.likelyMigrated && !t.stats?.likelyTruncated && (
                         <span title="Sin actividad reciente en la bonding curve: probablemente migró o murió." style={{ color: "var(--warn)", fontSize: 9.5 }}>migrado</span>
+                      )}
+                      {t.outcome !== "pending" && (
+                        <span title="desenlace del token (para win-rate)" style={{ color: OUTCOME_BADGE[t.outcome].color, fontSize: 9.5, fontWeight: 600 }}>{OUTCOME_BADGE[t.outcome].label}</span>
                       )}
                       {info?.dexes.map((d) => <span key={d} className="chip" style={{ padding: "1px 6px", fontSize: 9, cursor: "default" }}>{d}</span>)}
                       <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
@@ -293,7 +305,7 @@ export default function TrackerDashboard() {
             <div className="title"><span className="led" />Wallets co-ocurrentes</div>
             <div className="meta">
               {visibleWallets.length} wallets · ≥ {minTokens} tokens
-              {recomputeStats && ` · ${recomputeStats.groupsFound} grupos · lift med ${recomputeStats.medianLift.toFixed(1)}`}
+              {recomputeStats && ` · ${recomputeStats.groupsFound} grupos · ${recomputeStats.profitableWallets} rentables · lift med ${recomputeStats.medianLift.toFixed(1)}`}
             </div>
           </div>
 
@@ -307,6 +319,10 @@ export default function TrackerDashboard() {
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-3)", cursor: "pointer" }}>
               <input type="checkbox" checked={showBots} onChange={(e) => setShowBots(e.target.checked)} style={{ accentColor: "var(--warn)" }} />
               mostrar bots
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-3)", cursor: "pointer" }}>
+              <input type="checkbox" checked={onlyProfitable} onChange={(e) => setOnlyProfitable(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
+              solo rentables
             </label>
             <button className="btn-ghost" style={{ marginLeft: "auto", color: "var(--accent)", borderColor: "color-mix(in oklab, var(--accent) 45%, transparent)", opacity: monitoring ? 0.6 : 1 }}
               onClick={monitor} disabled={monitoring}>
@@ -322,7 +338,7 @@ export default function TrackerDashboard() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {visibleWallets.map((w) => (
-                <div key={w.wallet} style={{ display: "grid", gridTemplateColumns: "1fr 70px 90px 70px 70px", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: w.isIgnored ? "rgba(255,255,255,.02)" : "rgba(255,255,255,.04)", opacity: w.isIgnored ? 0.45 : 1, fontFamily: "var(--mono)", fontSize: 11.5 }}>
+                <div key={w.wallet} style={{ display: "grid", gridTemplateColumns: "1fr 64px 74px 46px 64px 60px", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: w.isIgnored ? "rgba(255,255,255,.02)" : "rgba(255,255,255,.04)", opacity: w.isIgnored ? 0.45 : 1, fontFamily: "var(--mono)", fontSize: 11.5 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                     <button onClick={() => openDetail(w.wallet)} title="ver detalle (tokens + co-buyers)"
                       style={{ background: "none", border: "none", padding: 0, color: "var(--ink)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 11.5 }}>
@@ -334,6 +350,10 @@ export default function TrackerDashboard() {
                   <span style={{ color: KIND_BADGE[w.kind].color }}>{KIND_BADGE[w.kind].label}</span>
                   <span style={{ color: "var(--ink-2)" }}>{w.tokensCount} tokens</span>
                   <span style={{ color: "var(--ink-3)" }}>{(w.ubiquityRatio * 100).toFixed(0)}%</span>
+                  <span title={w.plays > 0 ? `win-rate ${(w.winRate * 100).toFixed(0)}% — ${w.wins}/${w.plays} tokens con desenlace` : "sin tokens con desenlace todavía"}
+                    style={{ textAlign: "right", color: w.plays >= 2 && w.winRate >= 0.5 ? "var(--accent)" : "var(--ink-3)" }}>
+                    {w.plays > 0 ? `${w.wins}/${w.plays} ${(w.winRate * 100).toFixed(0)}%` : "—"}
+                  </span>
                   <button className="chip" style={{ cursor: "pointer", fontSize: 9.5 }} onClick={() => toggleIgnore(w.wallet, !w.isIgnored)}>
                     {w.isIgnored ? "incluir" : "ignorar"}
                   </button>
@@ -387,12 +407,16 @@ export default function TrackerDashboard() {
                   <span style={{ color: KIND_BADGE[detail.kind].color }}>{KIND_BADGE[detail.kind].label}</span>
                   {detail.groupId !== null && <span className="chip" style={{ color: "var(--accent)" }}>G{detail.groupId}</span>}
                   <span style={{ color: "var(--ink-3)" }}>{detail.tokensCount} tokens · {(detail.ubiquityRatio * 100).toFixed(0)}%</span>
+                  <span title="win-rate sobre tokens con desenlace" style={{ color: detail.plays >= 2 && detail.winRate >= 0.5 ? "var(--accent)" : "var(--ink-3)" }}>
+                    win-rate {detail.plays > 0 ? `${(detail.winRate * 100).toFixed(0)}% (${detail.wins}/${detail.plays})` : "s/d"}
+                  </span>
                 </div>
                 <div>
                   <div style={{ color: "var(--ink-3)", fontSize: 10, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".1em" }}>Tokens comprados ({detail.tokens.length})</div>
                   {detail.tokens.map((t) => (
-                    <div key={t.mint} style={{ display: "flex", gap: 10, padding: "3px 0", color: "var(--ink-2)" }}>
+                    <div key={t.mint} style={{ display: "flex", gap: 10, padding: "3px 0", color: "var(--ink-2)", alignItems: "center" }}>
                       <a href={`https://solscan.io/token/${t.mint}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink)", flex: 1, textDecoration: "none" }}>{t.symbol ?? shortenAddress(t.mint, 5)}</a>
+                      <span style={{ color: OUTCOME_BADGE[t.outcome].color, fontSize: 10 }}>{OUTCOME_BADGE[t.outcome].label}</span>
                       <span style={{ color: "var(--ink-3)" }}>#{t.rank}</span>
                       <span style={{ color: "var(--warn)" }}>{t.solIn.toFixed(3)} SOL</span>
                     </div>

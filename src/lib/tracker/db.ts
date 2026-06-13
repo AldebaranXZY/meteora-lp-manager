@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type {
   TrackedToken, EarlyBuyer, WalletRow, WalletKind, TrackerAlert, AnalyzeStats,
-  GroupSummary, WalletDetail, WalletTokenHit, CoBuyer,
+  GroupSummary, WalletDetail, WalletTokenHit, CoBuyer, TokenOutcome,
 } from "./types";
 import { ALERTS_RETENTION_DAYS, ALERTS_MAX_ROWS } from "./config";
 
@@ -34,7 +34,7 @@ function addColumn(db: Database.Database, table: string, col: string, decl: stri
   if (!hasColumn(db, table, col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 function migrate(db: Database.Database): void {
   // Diagnóstico del último análisis (JSON serializado de AnalyzeStats).
@@ -42,6 +42,11 @@ function migrate(db: Database.Database): void {
   // Co-ocurrencia: cluster + score por wallet.
   addColumn(db, "wallets", "group_id", "INTEGER");
   addColumn(db, "wallets", "cooccurrence_score", "REAL NOT NULL DEFAULT 0");
+  // Profitabilidad: desenlace del token + win-rate por wallet.
+  addColumn(db, "tokens", "outcome", "TEXT NOT NULL DEFAULT 'pending'");
+  addColumn(db, "wallets", "wins", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "wallets", "plays", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "wallets", "win_rate", "REAL NOT NULL DEFAULT 0");
   // Registro de versión (para futuras migraciones explícitas).
   db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`);
   const row = db.prepare(`SELECT version FROM schema_version LIMIT 1`).get() as { version: number } | undefined;
@@ -57,7 +62,8 @@ CREATE TABLE IF NOT EXISTS tokens (
   added_at INTEGER NOT NULL,
   analyzed_at INTEGER,
   buyers_fetched INTEGER NOT NULL DEFAULT 0,
-  last_stats TEXT
+  last_stats TEXT,
+  outcome TEXT NOT NULL DEFAULT 'pending'
 );
 CREATE TABLE IF NOT EXISTS early_buyers (
   token_mint TEXT NOT NULL,
@@ -80,7 +86,10 @@ CREATE TABLE IF NOT EXISTS wallets (
   is_ignored INTEGER NOT NULL DEFAULT 0,
   note TEXT,
   group_id INTEGER,
-  cooccurrence_score REAL NOT NULL DEFAULT 0
+  cooccurrence_score REAL NOT NULL DEFAULT 0,
+  wins INTEGER NOT NULL DEFAULT 0,
+  plays INTEGER NOT NULL DEFAULT 0,
+  win_rate REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,7 +131,7 @@ CREATE TABLE IF NOT EXISTS group_meta (
 
 // ─── Tokens ───────────────────────────────────────────────────────────────────
 
-interface TokenRowRaw { mint: string; symbol: string | null; name: string | null; added_at: number; analyzed_at: number | null; buyers_fetched: number; last_stats: string | null }
+interface TokenRowRaw { mint: string; symbol: string | null; name: string | null; added_at: number; analyzed_at: number | null; buyers_fetched: number; last_stats: string | null; outcome: string }
 function parseStats(raw: string | null): AnalyzeStats | null {
   if (!raw) return null;
   try { return JSON.parse(raw) as AnalyzeStats; } catch { return null; }
@@ -130,7 +139,7 @@ function parseStats(raw: string | null): AnalyzeStats | null {
 const toToken = (r: TokenRowRaw): TrackedToken => ({
   mint: r.mint, symbol: r.symbol, name: r.name,
   addedAt: r.added_at, analyzedAt: r.analyzed_at, buyersFetched: r.buyers_fetched,
-  stats: parseStats(r.last_stats),
+  stats: parseStats(r.last_stats), outcome: (r.outcome as TokenOutcome) ?? "pending",
 });
 
 export function upsertToken(mint: string, symbol: string | null, name: string | null): void {
@@ -147,6 +156,24 @@ export function listTokens(): TrackedToken[] {
 export function countAnalyzedTokens(): number {
   const row = getDb().prepare(`SELECT COUNT(*) AS n FROM tokens WHERE buyers_fetched = 1`).get() as { n: number };
   return row.n;
+}
+
+/** Mints de tokens analizados (para enriquecer con DexScreener y clasificar desenlace). */
+export function getAnalyzedTokenMints(): string[] {
+  return (getDb().prepare(`SELECT mint FROM tokens WHERE buyers_fetched = 1`).all() as { mint: string }[]).map((r) => r.mint);
+}
+
+/** Persiste el desenlace (winner/rug/pending) de cada token. */
+export function setTokenOutcomes(outcomes: { mint: string; outcome: TokenOutcome }[]): void {
+  const db = getDb();
+  const upd = db.prepare(`UPDATE tokens SET outcome = ? WHERE mint = ?`);
+  db.transaction(() => { for (const o of outcomes) upd.run(o.outcome, o.mint); })();
+}
+
+/** Mapa mint→outcome de los tokens analizados (para win-rate). */
+export function getTokenOutcomes(): Map<string, TokenOutcome> {
+  const rows = getDb().prepare(`SELECT mint, outcome FROM tokens WHERE buyers_fetched = 1`).all() as { mint: string; outcome: string }[];
+  return new Map(rows.map((r) => [r.mint, (r.outcome as TokenOutcome) ?? "pending"]));
 }
 
 // ─── Early buyers ──────────────────────────────────────────────────────────────
@@ -175,12 +202,13 @@ export function getTokenBuyerCount(mint: string): number {
 
 // ─── Wallets ───────────────────────────────────────────────────────────────────
 
-interface WalletRowRaw { wallet: string; tokens_count: number; ubiquity_ratio: number; kind: string; first_seen: number | null; is_monitored: number; is_ignored: number; note: string | null; group_id: number | null; cooccurrence_score: number }
+interface WalletRowRaw { wallet: string; tokens_count: number; ubiquity_ratio: number; kind: string; first_seen: number | null; is_monitored: number; is_ignored: number; note: string | null; group_id: number | null; cooccurrence_score: number; wins: number; plays: number; win_rate: number }
 const toWallet = (r: WalletRowRaw): WalletRow => ({
   wallet: r.wallet, tokensCount: r.tokens_count, ubiquityRatio: r.ubiquity_ratio,
   kind: r.kind as WalletKind, firstSeen: r.first_seen,
   isMonitored: !!r.is_monitored, isIgnored: !!r.is_ignored, note: r.note,
   groupId: r.group_id, cooccurrenceScore: r.cooccurrence_score,
+  wins: r.wins, plays: r.plays, winRate: r.win_rate,
 });
 
 /** Wallets que aparecen en >= minTokens tokens, rankeadas por co-ocurrencia. */
@@ -224,7 +252,8 @@ export function getWalletDetail(wallet: string): WalletDetail | null {
   if (!w) return null;
 
   const tokens = (db.prepare(
-    `SELECT eb.token_mint AS mint, t.symbol AS symbol, eb.rank AS rank, eb.sol_in AS solIn, eb.block_time AS blockTime
+    `SELECT eb.token_mint AS mint, t.symbol AS symbol, eb.rank AS rank, eb.sol_in AS solIn,
+            eb.block_time AS blockTime, COALESCE(t.outcome, 'pending') AS outcome
      FROM early_buyers eb LEFT JOIN tokens t ON t.mint = eb.token_mint
      WHERE eb.wallet = ? ORDER BY eb.block_time ASC`
   ).all(wallet) as WalletTokenHit[]);
@@ -243,6 +272,7 @@ export function getWalletDetail(wallet: string): WalletDetail | null {
     tokensCount: w.tokens_count,
     ubiquityRatio: w.ubiquity_ratio,
     groupId: w.group_id,
+    wins: w.wins, plays: w.plays, winRate: w.win_rate,
     tokens,
     coBuyers,
   };

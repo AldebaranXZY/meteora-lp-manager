@@ -22,6 +22,13 @@ export const MIN_GROUP_DENSITY = 0.2;     // densidad interna mínima de un clus
 export const TIMING_RANK_WEIGHT = 1;      // peso del bonus por cercanía de rank en la cola de compra
 export const TIMING_TIME_WEIGHT = 1;      // peso del bonus por cercanía temporal (segundos)
 
+// ── Outcome de token (ganó / rugueó) para win-rate ──
+// pump.fun migra/gradúa cerca de ~$69k mcap → mcap alto o AMM real con liquidez = ganador.
+export const WINNER_MIN_MCAP_USD = 60_000;  // mcap actual que cuenta como ganador
+export const WINNER_MIN_LIQ_USD = 10_000;   // liquidez en un AMM real (post-migración)
+export const RUG_MAX_LIQ_USD = 1_000;       // liquidez por debajo de esto = muerto
+export const RUG_MAX_MCAP_USD = 15_000;     // mcap por debajo de esto (+ poca liq) = rug
+
 // ── Alerts (retención) ──
 export const ALERTS_RETENTION_DAYS = 30;  // se limpian alertas más viejas que esto
 export const ALERTS_MAX_ROWS = 5000;      // tope duro de filas de alertas
