@@ -12,6 +12,7 @@ export interface TrackedToken {
   buyersFetched: number;
   stats: AnalyzeStats | null;   // diagnóstico del último análisis (truncado/migrado/cobertura)
   outcome: TokenOutcome;        // desenlace para win-rate (winner/rug/pending)
+  deepAnalyzed: boolean;        // ledger completo bajado (PnL realizado disponible)
 }
 
 export interface EarlyBuyer {
@@ -50,6 +51,29 @@ export interface AnalyzeResult {
   stats: AnalyzeStats;
 }
 
+/** Un trade pump.fun on-curve (compra o venta), base del PnL realizado. */
+export interface Trade {
+  wallet: string;
+  side: "buy" | "sell";
+  sol: number;        // SOL gastado (buy) o recibido (sell)
+  tokens: number;     // tokens recibidos (buy) o vendidos (sell)
+  blockTime: number;
+  signature: string;
+}
+
+/** Diagnóstico del "deep analyze" (ledger completo de un token: TODAS las firmas). */
+export interface DeepStats {
+  mint: string;
+  signaturesScanned: number;
+  pagesUsed: number;
+  hitPageCap: boolean;
+  tradesFound: number;
+  enhancedTxParsed: number;   // firmas parseadas (costo: el deep parsea TODO, no se corta)
+  elapsedMs: number;
+}
+
+export interface DeepAnalyzeResult { trades: Trade[]; stats: DeepStats }
+
 /** Diagnóstico del recálculo de co-ocurrencia (ventana para verificar que los
  * 'grupo' descansan en evidencia real, no en coincidencia). */
 export interface RecomputeStats {
@@ -80,6 +104,8 @@ export interface WalletRow {
   wins: number;                    // tokens early-comprados que ganaron
   plays: number;                   // tokens con desenlace decidido (winner|rug)
   winRate: number;                 // wins / plays (0 si plays=0)
+  realizedPnl: number;             // PnL realizado en SOL (de tokens deep-analizados)
+  pnlTokens: number;               // # de tokens con datos de trades (deep analyze)
 }
 
 /** Resumen de un cluster coordinado para la vista de grupos. */
@@ -100,6 +126,7 @@ export interface WalletTokenHit {
   solIn: number;
   blockTime: number;
   outcome: TokenOutcome;           // desenlace del token (winner/rug/pending)
+  realizedPnl: number | null;      // PnL realizado en SOL para este token (null si no hay trades)
 }
 export interface CoBuyer {
   wallet: string;
@@ -116,6 +143,8 @@ export interface WalletDetail {
   wins: number;
   plays: number;
   winRate: number;
+  realizedPnl: number;
+  pnlTokens: number;
   tokens: WalletTokenHit[];
   coBuyers: CoBuyer[];
 }

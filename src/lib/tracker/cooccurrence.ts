@@ -1,8 +1,8 @@
-import { getDb, countAnalyzedTokens, getTokenOutcomes } from "./db";
+import { getDb, countAnalyzedTokens, getTokenOutcomes, getPnLRows } from "./db";
 import type { RecomputeStats } from "./types";
 import {
-  aggregatePairs, connectedComponents, density, edgeWeight, lift, classify, computeWinRates,
-  type BuyerRow, type WinRate,
+  aggregatePairs, connectedComponents, density, edgeWeight, lift, classify, computeWinRates, computeRealizedPnL,
+  type BuyerRow, type WinRate, type WalletPnL,
 } from "./coalgo";
 import {
   UNIVERSAL_RATIO, UNIVERSAL_MIN_TOKENS, MIN_SUPPORT_TOKENS,
@@ -76,14 +76,19 @@ export function recompute(): RecomputeStats {
   const winRates = computeWinRates(plays, outcomes);
   const noWR: WinRate = { wins: 0, plays: 0, winRate: 0 };
 
+  // PnL realizado en SOL por wallet (de los tokens deep-analizados; ledger en `trades`).
+  const pnlByWallet = computeRealizedPnL(getPnLRows());
+  const noPnL: WalletPnL = { realizedPnl: 0, pnlTokens: 0 };
+
   // 5. Persistencia reconciliada.
   const upsert = db.prepare(
-    `INSERT INTO wallets (wallet, tokens_count, ubiquity_ratio, kind, first_seen, group_id, cooccurrence_score, wins, plays, win_rate)
-     VALUES (@wallet, @count, @ratio, @kind, @firstSeen, @groupId, @score, @wins, @plays, @winRate)
+    `INSERT INTO wallets (wallet, tokens_count, ubiquity_ratio, kind, first_seen, group_id, cooccurrence_score, wins, plays, win_rate, realized_pnl, pnl_tokens)
+     VALUES (@wallet, @count, @ratio, @kind, @firstSeen, @groupId, @score, @wins, @plays, @winRate, @realizedPnl, @pnlTokens)
      ON CONFLICT(wallet) DO UPDATE SET
        tokens_count = @count, ubiquity_ratio = @ratio, kind = @kind,
        first_seen = @firstSeen, group_id = @groupId, cooccurrence_score = @score,
-       wins = @wins, plays = @plays, win_rate = @winRate`
+       wins = @wins, plays = @plays, win_rate = @winRate,
+       realized_pnl = @realizedPnl, pnl_tokens = @pnlTokens`
   );
   const insPair = db.prepare(
     `INSERT OR REPLACE INTO wallet_pairs (wallet_a, wallet_b, shared_count, sum_rank_gap, sum_time_gap, lift, weight)
@@ -97,11 +102,12 @@ export function recompute(): RecomputeStats {
 
   db.transaction(() => {
     // Reset SOLO columnas computadas → preserva is_monitored/is_ignored/note.
-    db.prepare(`UPDATE wallets SET tokens_count = 0, ubiquity_ratio = 0, kind = 'unknown', first_seen = NULL, group_id = NULL, cooccurrence_score = 0, wins = 0, plays = 0, win_rate = 0`).run();
+    db.prepare(`UPDATE wallets SET tokens_count = 0, ubiquity_ratio = 0, kind = 'unknown', first_seen = NULL, group_id = NULL, cooccurrence_score = 0, wins = 0, plays = 0, win_rate = 0, realized_pnl = 0, pnl_tokens = 0`).run();
     for (const a of agg) {
       const ratio = a.c / denom;
       const groupId = groupOf.get(a.wallet) ?? null;
       const wr = winRates.get(a.wallet) ?? noWR;
+      const pnl = pnlByWallet.get(a.wallet) ?? noPnL;
       upsert.run({
         wallet: a.wallet, count: a.c, ratio,
         kind: classify(a.c, ratio, totalTokens, groupId, {
@@ -109,6 +115,7 @@ export function recompute(): RecomputeStats {
         }),
         firstSeen: a.first_seen, groupId, score: scoreOf.get(a.wallet) ?? 0,
         wins: wr.wins, plays: wr.plays, winRate: wr.winRate,
+        realizedPnl: pnl.realizedPnl, pnlTokens: pnl.pnlTokens,
       });
     }
     // GC de filas vacías SIN flags manuales (no se pierde nada elegido a mano).

@@ -30,7 +30,45 @@ function heliusKey(): string {
   return k;
 }
 
-async function fetchEnhanced(signatures: string[]): Promise<HeliusEnhancedTx[]> {
+/** Conexión mainnet fija (pump.fun es mainnet-only). Compartida indexer/ledger. */
+export function mainnetConnection(): Connection {
+  return new Connection(`https://mainnet.helius-rpc.com/?api-key=${heliusKey()}`, "confirmed");
+}
+
+/** PDA de la bonding curve de un token (ahí están las compras/ventas pump.fun). */
+export function bondingCurvePda(mint: string): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("bonding-curve"), new PublicKey(mint).toBuffer()],
+    new PublicKey(PUMP_FUN_PROGRAM)
+  )[0];
+}
+
+export interface SigPage { sigs: { signature: string; blockTime: number }[]; pagesUsed: number; hitPageCap: boolean }
+
+/** Pagina TODAS las firmas de una address hasta el génesis (o el tope). Barato
+ * (no trae cuerpos de tx). `hitPageCap` = se agotó el tope sin llegar al origen. */
+export async function paginateSignatures(connection: Connection, address: PublicKey): Promise<SigPage> {
+  let before: string | undefined;
+  const sigs: { signature: string; blockTime: number }[] = [];
+  let pagesUsed = 0;
+  let hitPageCap = false;
+  for (let p = 0; p < MAX_SIGNATURE_PAGES; p++) {
+    const batch = await retry(
+      () => connection.getSignaturesForAddress(address, before ? { limit: 1000, before } : { limit: 1000 }),
+      3,
+      "getSignaturesForAddress"
+    );
+    pagesUsed++;
+    if (batch.length === 0) break;
+    for (const s of batch) sigs.push({ signature: s.signature, blockTime: s.blockTime ?? 0 });
+    if (batch.length < 1000) break;                       // batch corto = génesis alcanzado
+    before = batch[batch.length - 1].signature;
+    if (p === MAX_SIGNATURE_PAGES - 1) hitPageCap = true; // se agotó el tope SIN llegar al génesis
+  }
+  return { sigs, pagesUsed, hitPageCap };
+}
+
+export async function fetchEnhanced(signatures: string[]): Promise<HeliusEnhancedTx[]> {
   const data = await fetchJSON<unknown>(`https://api.helius.xyz/v0/transactions?api-key=${heliusKey()}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -47,37 +85,12 @@ async function fetchEnhanced(signatures: string[]): Promise<HeliusEnhancedTx[]> 
  */
 export async function getEarlyBuyers(mint: string, limit: number): Promise<AnalyzeResult> {
   const startedAt = Date.now();
-  // pump.fun es MAINNET-only → conexión mainnet fija, sin importar
-  // NEXT_PUBLIC_SOLANA_CLUSTER (que es para el toggle devnet del LP manager).
-  const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${heliusKey()}`, "confirmed");
-  const mintPk = new PublicKey(mint);
+  const connection = mainnetConnection();
 
   // Firmas de la BONDING CURVE PDA (no del mint): ahí están solo las compras/ventas
   // de pump.fun, sin el ruido de transfers/ATAs del mint.
-  const [bondingCurve] = PublicKey.findProgramAddressSync(
-    [Buffer.from("bonding-curve"), mintPk.toBuffer()],
-    new PublicKey(PUMP_FUN_PROGRAM)
-  );
-
-  // 1. Paginar firmas hasta las más viejas (la API devuelve nuevas→viejas).
-  let before: string | undefined;
-  const sigs: { signature: string; blockTime: number }[] = [];
-  let pagesUsed = 0;
-  let hitPageCap = false;
-  for (let p = 0; p < MAX_SIGNATURE_PAGES; p++) {
-    const batch = await retry(
-      () => connection.getSignaturesForAddress(bondingCurve, before ? { limit: 1000, before } : { limit: 1000 }),
-      3,
-      "getSignaturesForAddress"
-    );
-    pagesUsed++;
-    if (batch.length === 0) break;
-    for (const s of batch) sigs.push({ signature: s.signature, blockTime: s.blockTime ?? 0 });
-    if (batch.length < 1000) break;                       // batch corto = génesis alcanzado
-    before = batch[batch.length - 1].signature;
-    if (p === MAX_SIGNATURE_PAGES - 1) hitPageCap = true; // se agotó el tope SIN llegar al génesis
-  }
-  const chrono = sigs.reverse(); // viejas → nuevas
+  const { sigs, pagesUsed, hitPageCap } = await paginateSignatures(connection, bondingCurvePda(mint));
+  const chrono = sigs.slice().reverse(); // viejas → nuevas
 
   // 2. Parsear desde el origen hasta juntar `limit` compradores únicos. Se fetchean
   // hasta ENHANCED_CONCURRENCY batches en paralelo por ola, pero se PROCESAN en
