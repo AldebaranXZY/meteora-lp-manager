@@ -450,8 +450,8 @@ export default function TrackerDashboard() {
                     <div key={t.mint} style={{ display: "flex", gap: 10, padding: "3px 0", color: "var(--ink-2)", alignItems: "center" }}>
                       <a href={`https://solscan.io/token/${t.mint}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink)", flex: 1, textDecoration: "none" }}>{t.symbol ?? shortenAddress(t.mint, 5)}</a>
                       <span style={{ color: OUTCOME_BADGE[t.outcome].color, fontSize: 10 }}>{OUTCOME_BADGE[t.outcome].label}</span>
-                      <span style={{ color: "var(--ink-3)" }}>#{t.rank}</span>
-                      <span style={{ color: "var(--warn)" }}>{t.solIn.toFixed(3)} SOL</span>
+                      <span style={{ color: "var(--ink-3)" }} title={t.rank === null ? "tradeó el token pero no fue early buyer" : ""}>{t.rank === null ? "trade" : `#${t.rank}`}</span>
+                      <span style={{ color: "var(--warn)" }}>{t.solIn !== null ? `${t.solIn.toFixed(3)} SOL` : "—"}</span>
                       {t.realizedPnl !== null && (
                         <span title="PnL realizado de este token" style={{ color: t.realizedPnl >= 0 ? "var(--accent)" : "var(--danger)", minWidth: 64, textAlign: "right" }}>
                           {t.realizedPnl >= 0 ? "+" : ""}{t.realizedPnl.toFixed(2)}◎
