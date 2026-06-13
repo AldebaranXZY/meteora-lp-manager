@@ -1,7 +1,11 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { TrackedToken, EarlyBuyer, WalletRow, WalletKind, TrackerAlert } from "./types";
+import type {
+  TrackedToken, EarlyBuyer, WalletRow, WalletKind, TrackerAlert, AnalyzeStats,
+  GroupSummary, WalletDetail, WalletTokenHit, CoBuyer,
+} from "./types";
+import { ALERTS_RETENTION_DAYS, ALERTS_MAX_ROWS } from "./config";
 
 // ─── Conexión SQLite (singleton, archivo local data/tracker.db) ──────────────
 
@@ -14,8 +18,35 @@ export function getDb(): Database.Database {
   const db = new Database(join(dir, "tracker.db"));
   db.pragma("journal_mode = WAL");
   db.exec(SCHEMA);
+  migrate(db);
   _db = db;
   return _db;
+}
+
+// ─── Migraciones idempotentes ────────────────────────────────────────────────
+// CREATE TABLE IF NOT EXISTS cubre DBs nuevas; para DBs ya existentes hay que
+// agregar columnas/tablas nuevas sin perder data. Todo guardado por existencia.
+
+function hasColumn(db: Database.Database, table: string, col: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col);
+}
+function addColumn(db: Database.Database, table: string, col: string, decl: string): void {
+  if (!hasColumn(db, table, col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
+}
+
+const SCHEMA_VERSION = 2;
+
+function migrate(db: Database.Database): void {
+  // Diagnóstico del último análisis (JSON serializado de AnalyzeStats).
+  addColumn(db, "tokens", "last_stats", "TEXT");
+  // Co-ocurrencia: cluster + score por wallet.
+  addColumn(db, "wallets", "group_id", "INTEGER");
+  addColumn(db, "wallets", "cooccurrence_score", "REAL NOT NULL DEFAULT 0");
+  // Registro de versión (para futuras migraciones explícitas).
+  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`);
+  const row = db.prepare(`SELECT version FROM schema_version LIMIT 1`).get() as { version: number } | undefined;
+  if (!row) db.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(SCHEMA_VERSION);
+  else if (row.version !== SCHEMA_VERSION) db.prepare(`UPDATE schema_version SET version = ?`).run(SCHEMA_VERSION);
 }
 
 const SCHEMA = `
@@ -25,7 +56,8 @@ CREATE TABLE IF NOT EXISTS tokens (
   name TEXT,
   added_at INTEGER NOT NULL,
   analyzed_at INTEGER,
-  buyers_fetched INTEGER NOT NULL DEFAULT 0
+  buyers_fetched INTEGER NOT NULL DEFAULT 0,
+  last_stats TEXT
 );
 CREATE TABLE IF NOT EXISTS early_buyers (
   token_mint TEXT NOT NULL,
@@ -46,7 +78,9 @@ CREATE TABLE IF NOT EXISTS wallets (
   first_seen INTEGER,
   is_monitored INTEGER NOT NULL DEFAULT 0,
   is_ignored INTEGER NOT NULL DEFAULT 0,
-  note TEXT
+  note TEXT,
+  group_id INTEGER,
+  cooccurrence_score REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,14 +93,44 @@ CREATE TABLE IF NOT EXISTS alerts (
   seen INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_received ON alerts(received_at DESC);
+CREATE TABLE IF NOT EXISTS wallet_pairs (
+  wallet_a TEXT NOT NULL,
+  wallet_b TEXT NOT NULL,
+  shared_count INTEGER NOT NULL,
+  sum_rank_gap INTEGER NOT NULL DEFAULT 0,
+  sum_time_gap INTEGER NOT NULL DEFAULT 0,
+  lift REAL NOT NULL DEFAULT 0,
+  weight REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (wallet_a, wallet_b)
+);
+CREATE INDEX IF NOT EXISTS idx_pairs_a ON wallet_pairs(wallet_a);
+CREATE INDEX IF NOT EXISTS idx_pairs_b ON wallet_pairs(wallet_b);
+CREATE TABLE IF NOT EXISTS wallet_groups (
+  wallet TEXT PRIMARY KEY,
+  group_id INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_groups_id ON wallet_groups(group_id);
+CREATE TABLE IF NOT EXISTS group_meta (
+  group_id INTEGER PRIMARY KEY,
+  size INTEGER NOT NULL,
+  shared_tokens INTEGER NOT NULL,
+  avg_edge_weight REAL NOT NULL,
+  cohesion REAL NOT NULL,
+  computed_at INTEGER NOT NULL
+);
 `;
 
 // ─── Tokens ───────────────────────────────────────────────────────────────────
 
-interface TokenRowRaw { mint: string; symbol: string | null; name: string | null; added_at: number; analyzed_at: number | null; buyers_fetched: number }
+interface TokenRowRaw { mint: string; symbol: string | null; name: string | null; added_at: number; analyzed_at: number | null; buyers_fetched: number; last_stats: string | null }
+function parseStats(raw: string | null): AnalyzeStats | null {
+  if (!raw) return null;
+  try { return JSON.parse(raw) as AnalyzeStats; } catch { return null; }
+}
 const toToken = (r: TokenRowRaw): TrackedToken => ({
   mint: r.mint, symbol: r.symbol, name: r.name,
   addedAt: r.added_at, analyzedAt: r.analyzed_at, buyersFetched: r.buyers_fetched,
+  stats: parseStats(r.last_stats),
 });
 
 export function upsertToken(mint: string, symbol: string | null, name: string | null): void {
@@ -87,19 +151,20 @@ export function countAnalyzedTokens(): number {
 
 // ─── Early buyers ──────────────────────────────────────────────────────────────
 
-/** Reemplaza el set de compradores tempranos de un token y lo marca analizado. */
-export function replaceEarlyBuyers(mint: string, buyers: EarlyBuyer[]): void {
+/** Reemplaza el set de compradores tempranos de un token, lo marca analizado y
+ * guarda el diagnóstico (`AnalyzeStats`) del análisis. */
+export function replaceEarlyBuyers(mint: string, buyers: EarlyBuyer[], stats?: AnalyzeStats): void {
   const db = getDb();
   const del = db.prepare(`DELETE FROM early_buyers WHERE token_mint = ?`);
   const ins = db.prepare(
     `INSERT OR REPLACE INTO early_buyers (token_mint, wallet, rank, sol_in, tokens_out, block_time, signature)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
-  const mark = db.prepare(`UPDATE tokens SET analyzed_at = ?, buyers_fetched = 1 WHERE mint = ?`);
+  const mark = db.prepare(`UPDATE tokens SET analyzed_at = ?, buyers_fetched = 1, last_stats = ? WHERE mint = ?`);
   db.transaction(() => {
     del.run(mint);
     for (const b of buyers) ins.run(mint, b.wallet, b.rank, b.solIn, b.tokensOut, b.blockTime, b.signature);
-    mark.run(Date.now(), mint);
+    mark.run(Date.now(), stats ? JSON.stringify(stats) : null, mint);
   })();
 }
 
@@ -110,18 +175,77 @@ export function getTokenBuyerCount(mint: string): number {
 
 // ─── Wallets ───────────────────────────────────────────────────────────────────
 
-interface WalletRowRaw { wallet: string; tokens_count: number; ubiquity_ratio: number; kind: string; first_seen: number | null; is_monitored: number; is_ignored: number; note: string | null }
+interface WalletRowRaw { wallet: string; tokens_count: number; ubiquity_ratio: number; kind: string; first_seen: number | null; is_monitored: number; is_ignored: number; note: string | null; group_id: number | null; cooccurrence_score: number }
 const toWallet = (r: WalletRowRaw): WalletRow => ({
   wallet: r.wallet, tokensCount: r.tokens_count, ubiquityRatio: r.ubiquity_ratio,
   kind: r.kind as WalletKind, firstSeen: r.first_seen,
   isMonitored: !!r.is_monitored, isIgnored: !!r.is_ignored, note: r.note,
+  groupId: r.group_id, cooccurrenceScore: r.cooccurrence_score,
 });
 
 /** Wallets que aparecen en >= minTokens tokens, rankeadas por co-ocurrencia. */
 export function getWalletsRanked(minTokens: number): WalletRow[] {
   return (getDb().prepare(
-    `SELECT * FROM wallets WHERE tokens_count >= ? ORDER BY tokens_count DESC, ubiquity_ratio DESC`
+    `SELECT * FROM wallets WHERE tokens_count >= ?
+     ORDER BY (group_id IS NULL), cooccurrence_score DESC, tokens_count DESC, ubiquity_ratio DESC`
   ).all(minTokens) as WalletRowRaw[]).map(toWallet);
+}
+
+// ─── Grupos coordinados (clusters) ───────────────────────────────────────────
+
+interface GroupMetaRaw { group_id: number; size: number; shared_tokens: number; avg_edge_weight: number; cohesion: number }
+
+/** Clusters coordinados con sus miembros, ordenados por cohesión. */
+export function getGroups(): GroupSummary[] {
+  const db = getDb();
+  const metas = db.prepare(
+    `SELECT group_id, size, shared_tokens, avg_edge_weight, cohesion FROM group_meta ORDER BY avg_edge_weight DESC`
+  ).all() as GroupMetaRaw[];
+  const memberStmt = db.prepare(`SELECT wallet FROM wallet_groups WHERE group_id = ? ORDER BY wallet`);
+  return metas.map((m) => ({
+    groupId: m.group_id,
+    size: m.size,
+    sharedTokens: m.shared_tokens,
+    avgEdgeWeight: m.avg_edge_weight,
+    cohesion: m.cohesion,
+    wallets: (memberStmt.all(m.group_id) as { wallet: string }[]).map((r) => r.wallet),
+  }));
+}
+
+/** Wallets de un grupo (para export/monitoreo). */
+export function getGroupWallets(groupId: number): string[] {
+  return (getDb().prepare(`SELECT wallet FROM wallet_groups WHERE group_id = ? ORDER BY wallet`).all(groupId) as { wallet: string }[]).map((r) => r.wallet);
+}
+
+/** Detalle de una wallet: tokens en los que fue early buyer + co-buyers + grupo. */
+export function getWalletDetail(wallet: string): WalletDetail | null {
+  const db = getDb();
+  const w = db.prepare(`SELECT * FROM wallets WHERE wallet = ?`).get(wallet) as WalletRowRaw | undefined;
+  if (!w) return null;
+
+  const tokens = (db.prepare(
+    `SELECT eb.token_mint AS mint, t.symbol AS symbol, eb.rank AS rank, eb.sol_in AS solIn, eb.block_time AS blockTime
+     FROM early_buyers eb LEFT JOIN tokens t ON t.mint = eb.token_mint
+     WHERE eb.wallet = ? ORDER BY eb.block_time ASC`
+  ).all(wallet) as WalletTokenHit[]);
+
+  // Co-buyers: pares donde la wallet es a o b. shared/lift/weight ya calculados.
+  const coBuyers = (db.prepare(
+    `SELECT CASE WHEN wallet_a = ? THEN wallet_b ELSE wallet_a END AS wallet,
+            shared_count AS shared, lift, weight
+     FROM wallet_pairs WHERE wallet_a = ? OR wallet_b = ?
+     ORDER BY weight DESC LIMIT 50`
+  ).all(wallet, wallet, wallet) as CoBuyer[]);
+
+  return {
+    wallet: w.wallet,
+    kind: w.kind as WalletKind,
+    tokensCount: w.tokens_count,
+    ubiquityRatio: w.ubiquity_ratio,
+    groupId: w.group_id,
+    tokens,
+    coBuyers,
+  };
 }
 
 export function getMonitoredWallets(): string[] {
@@ -167,4 +291,15 @@ export function listAlerts(limit = 100): TrackerAlert[] {
 export function alertExists(signature: string, wallet: string): boolean {
   const row = getDb().prepare(`SELECT 1 FROM alerts WHERE signature = ? AND wallet = ? LIMIT 1`).get(signature, wallet);
   return !!row;
+}
+
+/** Limpia alertas viejas (retención) y recorta al tope de filas. Evita que la
+ * tabla crezca infinito (antes no había límite). */
+export function pruneAlerts(): void {
+  const db = getDb();
+  const cutoff = Date.now() - ALERTS_RETENTION_DAYS * 86_400_000;
+  db.prepare(`DELETE FROM alerts WHERE received_at < ?`).run(cutoff);
+  db.prepare(
+    `DELETE FROM alerts WHERE id NOT IN (SELECT id FROM alerts ORDER BY received_at DESC LIMIT ?)`
+  ).run(ALERTS_MAX_ROWS);
 }

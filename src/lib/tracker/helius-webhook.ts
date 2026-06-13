@@ -2,6 +2,8 @@
 // Un solo webhook por instalación, identificado por su webhookURL (el túnel).
 // Helius reenvía el `authHeader` que seteamos → lo validamos en el receptor.
 
+import { fetchResilient } from "./http";
+
 const HELIUS_WEBHOOKS_API = "https://api.helius.xyz/v0/webhooks";
 
 function apiKey(): string {
@@ -25,17 +27,24 @@ export async function syncWebhook(addresses: string[]): Promise<SyncResult> {
   const key = apiKey();
 
   // Buscar webhook existente con nuestra URL.
-  const listRes = await fetch(`${HELIUS_WEBHOOKS_API}?api-key=${key}`);
+  const listRes = await fetchResilient(`${HELIUS_WEBHOOKS_API}?api-key=${key}`, { label: "Helius webhook list" });
   const existing: ExistingWebhook[] = listRes.ok ? await listRes.json() : [];
   const match = existing.find((w) => w.webhookURL === url);
 
   // Helius no acepta lista vacía: si no hay wallets, borrar el webhook.
   if (addresses.length === 0) {
     if (match) {
-      await fetch(`${HELIUS_WEBHOOKS_API}/${match.webhookID}?api-key=${key}`, { method: "DELETE" });
+      await fetchResilient(`${HELIUS_WEBHOOKS_API}/${match.webhookID}?api-key=${key}`, { method: "DELETE", label: "Helius webhook delete" });
       return { webhookID: match.webhookID, monitored: 0, action: "deleted" };
     }
     return { webhookID: "", monitored: 0, action: "noop" };
+  }
+
+  // Guard: registrar el webhook SIN secret lo deja abierto (el túnel es público
+  // → cualquiera podría inyectar alertas falsas). Exigir secret antes de crear.
+  const secret = process.env.TRACKER_WEBHOOK_SECRET;
+  if (!secret) {
+    throw new Error("TRACKER_WEBHOOK_SECRET no configurada: sin secret el webhook queda abierto. Poné un valor fuerte en .env.local antes de monitorear.");
   }
 
   const body = JSON.stringify({
@@ -43,13 +52,13 @@ export async function syncWebhook(addresses: string[]): Promise<SyncResult> {
     transactionTypes: ["ANY"],
     accountAddresses: addresses,
     webhookType: "enhanced",
-    authHeader: process.env.TRACKER_WEBHOOK_SECRET ?? "",
+    authHeader: secret,
   });
   const headers = { "Content-Type": "application/json" };
 
   const res = match
-    ? await fetch(`${HELIUS_WEBHOOKS_API}/${match.webhookID}?api-key=${key}`, { method: "PUT", headers, body })
-    : await fetch(`${HELIUS_WEBHOOKS_API}?api-key=${key}`, { method: "POST", headers, body });
+    ? await fetchResilient(`${HELIUS_WEBHOOKS_API}/${match.webhookID}?api-key=${key}`, { method: "PUT", headers, body, label: "Helius webhook update" })
+    : await fetchResilient(`${HELIUS_WEBHOOKS_API}?api-key=${key}`, { method: "POST", headers, body, label: "Helius webhook create" });
 
   if (!res.ok) throw new Error(`Helius webhook ${res.status}: ${await res.text().catch(() => "")}`);
   const data = await res.json();

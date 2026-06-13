@@ -1,4 +1,5 @@
 import type { TokenInfo } from "./types";
+import { fetchResilient } from "./http";
 
 // ─── Enriquecimiento de token (DexScreener, gratis keyless) ──────────────────
 // Batch lookup de pares por mint. Agrega por token (un token puede tener varios
@@ -64,7 +65,7 @@ export async function getTokensInfo(mints: string[]): Promise<Record<string, Tok
     const chunk = toFetch.slice(i, i + BATCH);
     let pairs: DexPair[] = [];
     try {
-      const res = await fetch(`${BASE}/${chunk.join(",")}`);
+      const res = await fetchResilient(`${BASE}/${chunk.join(",")}`, { label: "DexScreener" });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) pairs = data;

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { shortenAddress, formatUSD } from "@/lib/meteora";
 import DiscoverPanel from "./DiscoverPanel";
-import type { TrackedToken, WalletRow, TrackerAlert, WalletKind, TokenInfo } from "@/lib/tracker/types";
+import type { TrackedToken, WalletRow, TrackerAlert, WalletKind, TokenInfo, GroupSummary, WalletDetail, RecomputeStats } from "@/lib/tracker/types";
 
 const KIND_BADGE: Record<WalletKind, { label: string; color: string }> = {
   group:            { label: "🟢 grupo",   color: "var(--accent)" },
@@ -44,6 +44,11 @@ export default function TrackerDashboard() {
   const [view, setView] = useState<"analisis" | "descubrir">("analisis");
   const [tokenInfo, setTokenInfo] = useState<Record<string, TokenInfo>>({});
 
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [recomputeStats, setRecomputeStats] = useState<RecomputeStats | null>(null);
+  const [detail, setDetail] = useState<WalletDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
   // ── Loaders ─────────────────────────────────────────────────────────────────
   const loadTokens = useCallback(async () => {
     try { const d = await (await fetch("/api/tracker/tokens")).json(); setTokens(d.tokens ?? []); } catch {}
@@ -53,13 +58,18 @@ export default function TrackerDashboard() {
     try { const d = await (await fetch(`/api/tracker/wallets?minTokens=${k}`)).json(); setWallets(d.wallets ?? []); } catch {}
   }, []);
 
+  const loadGroups = useCallback(async () => {
+    try { const d = await (await fetch("/api/tracker/groups")).json(); setGroups(d.groups ?? []); } catch {}
+  }, []);
+
   const onDiscoverAdded = useCallback(() => {
     loadTokens();
     loadWallets(minTokens);
+    loadGroups();
     setView("analisis");
-  }, [loadTokens, loadWallets, minTokens]);
+  }, [loadTokens, loadWallets, loadGroups, minTokens]);
 
-  useEffect(() => { loadTokens(); }, [loadTokens]);
+  useEffect(() => { loadTokens(); loadGroups(); }, [loadTokens, loadGroups]);
 
   // Enriquecimiento DexScreener (batch) cuando cambia la lista de tokens trackeados.
   const tokenMints = tokens.map((t) => t.mint).join(",");
@@ -97,14 +107,36 @@ export default function TrackerDashboard() {
       });
       const d = await res.json();
       if (!res.ok || d.error) throw new Error(d.error ?? "Error");
+      // Recompute de co-ocurrencia tras el análisis single (el batch del discover
+      // lo hace en su propio flujo).
+      const rc = await (await fetch("/api/tracker/recompute", { method: "POST" })).json();
+      if (rc.stats) setRecomputeStats(rc.stats);
       setCa("");
       await loadTokens();
       await loadWallets(minTokens);
+      await loadGroups();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error");
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  const openDetail = async (wallet: string) => {
+    setDetailLoading(true); setDetail(null);
+    try {
+      const d = await (await fetch(`/api/tracker/wallet?address=${wallet}`)).json();
+      if (d.detail) setDetail(d.detail);
+    } catch { /* noop */ } finally { setDetailLoading(false); }
+  };
+
+  const exportGroup = (g: GroupSummary) => {
+    const csv = "wallet\n" + g.wallets.join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `grupo-${g.groupId}.csv`; a.click();
+    URL.revokeObjectURL(url);
   };
 
   const toggleIgnore = async (wallet: string, isIgnored: boolean) => {
@@ -187,6 +219,13 @@ export default function TrackerDashboard() {
                         {t.symbol ?? shortenAddress(t.mint)}
                       </a>
                       <span title={t.buyersFetched ? "analizado" : "sin analizar"} style={{ color: t.buyersFetched ? "var(--accent)" : "var(--ink-3)" }}>{t.buyersFetched ? "✓" : "…"}</span>
+                      {t.stats?.likelyTruncated && (
+                        <span title={`Tope de paginación alcanzado (${t.stats.signaturesScanned} firmas, ${t.stats.pagesUsed} páginas): los early buyers pueden NO arrancar en el origen.`}
+                          style={{ color: "var(--danger)", fontSize: 9.5, fontWeight: 600 }}>⚠ truncado</span>
+                      )}
+                      {t.stats?.likelyMigrated && !t.stats?.likelyTruncated && (
+                        <span title="Sin actividad reciente en la bonding curve: probablemente migró o murió." style={{ color: "var(--warn)", fontSize: 9.5 }}>migrado</span>
+                      )}
                       {info?.dexes.map((d) => <span key={d} className="chip" style={{ padding: "1px 6px", fontSize: 9, cursor: "default" }}>{d}</span>)}
                       <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                         {info?.socials.slice(0, 3).map((s, i) => <a key={i} href={s.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink-3)", textDecoration: "none" }}>{socialLabel(s.type)}</a>)}
@@ -202,6 +241,13 @@ export default function TrackerDashboard() {
                         <span>edad {fmtAge(info.pairCreatedAt)}</span>
                       </div>
                     )}
+                    {t.stats && (
+                      <div style={{ display: "flex", gap: 12, marginTop: 4, color: "var(--ink-3)", fontSize: 10, flexWrap: "wrap" }}>
+                        <span>{t.stats.buyersFound} buyers</span>
+                        <span>{t.stats.signaturesScanned.toLocaleString()} firmas · {t.stats.pagesUsed}p</span>
+                        {t.stats.hitPageCap && <span style={{ color: "var(--danger)" }}>tope alcanzado (sin génesis)</span>}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -209,11 +255,46 @@ export default function TrackerDashboard() {
           )}
         </div>
 
+        {/* ── Grupos coordinados ───────────────────────────────────────────────── */}
+        {groups.length > 0 && (
+          <div className="card">
+            <div className="card-h" style={{ marginBottom: 12 }}>
+              <div className="title"><span className="led" />Grupos coordinados</div>
+              <div className="meta">{groups.length} clusters detectados por co-ocurrencia</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {groups.map((g) => (
+                <div key={g.groupId} style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(0,232,122,0.06)", fontFamily: "var(--mono)", fontSize: 11.5 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span style={{ color: "var(--accent)", fontWeight: 600 }}>G{g.groupId}</span>
+                    <span style={{ color: "var(--ink-2)" }}>{g.size} wallets</span>
+                    <span style={{ color: "var(--ink-3)" }} title="densidad interna del cluster">cohesión {(g.cohesion * 100).toFixed(0)}%</span>
+                    <span style={{ color: "var(--ink-3)" }} title="tokens co-comprados (máx de un par)">≤{g.sharedTokens} tokens en común</span>
+                    <button className="chip" style={{ marginLeft: "auto", cursor: "pointer", fontSize: 9.5 }} onClick={() => exportGroup(g)}>export CSV</button>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                    {g.wallets.slice(0, 12).map((w) => (
+                      <button key={w} onClick={() => openDetail(w)} title="ver detalle"
+                        style={{ background: "rgba(255,255,255,.04)", border: "none", borderRadius: 6, padding: "2px 6px", color: "var(--ink-2)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10 }}>
+                        {shortenAddress(w, 4)}
+                      </button>
+                    ))}
+                    {g.wallets.length > 12 && <span style={{ color: "var(--ink-3)", fontSize: 10 }}>+{g.wallets.length - 12}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ── Wallets co-ocurrentes ────────────────────────────────────────────── */}
         <div className="card">
           <div className="card-h" style={{ marginBottom: 12 }}>
             <div className="title"><span className="led" />Wallets co-ocurrentes</div>
-            <div className="meta">{visibleWallets.length} wallets · aparecen en ≥ {minTokens} tokens</div>
+            <div className="meta">
+              {visibleWallets.length} wallets · ≥ {minTokens} tokens
+              {recomputeStats && ` · ${recomputeStats.groupsFound} grupos · lift med ${recomputeStats.medianLift.toFixed(1)}`}
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
@@ -242,9 +323,14 @@ export default function TrackerDashboard() {
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {visibleWallets.map((w) => (
                 <div key={w.wallet} style={{ display: "grid", gridTemplateColumns: "1fr 70px 90px 70px 70px", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: w.isIgnored ? "rgba(255,255,255,.02)" : "rgba(255,255,255,.04)", opacity: w.isIgnored ? 0.45 : 1, fontFamily: "var(--mono)", fontSize: 11.5 }}>
-                  <a href={`https://solscan.io/account/${w.wallet}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink)", textDecoration: "none" }}>
-                    {shortenAddress(w.wallet, 6)}{w.isMonitored && <span style={{ color: "var(--accent)" }}> ●</span>}
-                  </a>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <button onClick={() => openDetail(w.wallet)} title="ver detalle (tokens + co-buyers)"
+                      style={{ background: "none", border: "none", padding: 0, color: "var(--ink)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 11.5 }}>
+                      {shortenAddress(w.wallet, 6)}{w.isMonitored && <span style={{ color: "var(--accent)" }}> ●</span>}
+                    </button>
+                    {w.groupId !== null && <span className="chip" style={{ padding: "1px 6px", fontSize: 9, cursor: "default", color: "var(--accent)" }}>G{w.groupId}</span>}
+                    <a href={`https://solscan.io/account/${w.wallet}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink-3)", textDecoration: "none", fontSize: 10 }}>↗</a>
+                  </div>
                   <span style={{ color: KIND_BADGE[w.kind].color }}>{KIND_BADGE[w.kind].label}</span>
                   <span style={{ color: "var(--ink-2)" }}>{w.tokensCount} tokens</span>
                   <span style={{ color: "var(--ink-3)" }}>{(w.ubiquityRatio * 100).toFixed(0)}%</span>
@@ -283,6 +369,52 @@ export default function TrackerDashboard() {
         </div>
 
       </div>
+
+      {/* ── Drill-down de wallet (overlay) ───────────────────────────────────── */}
+      {(detail || detailLoading) && (
+        <div onClick={() => setDetail(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 640, width: "100%", maxHeight: "80vh", overflowY: "auto" }}>
+            <div className="card-h" style={{ marginBottom: 12 }}>
+              <div className="title"><span className="led" />Detalle de wallet</div>
+              <button className="chip" style={{ cursor: "pointer" }} onClick={() => setDetail(null)}>cerrar</button>
+            </div>
+            {detailLoading ? (
+              <p style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--ink-3)" }}>Cargando…</p>
+            ) : detail ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 14, fontFamily: "var(--mono)", fontSize: 11.5 }}>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <a href={`https://solscan.io/account/${detail.wallet}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink)" }}>{shortenAddress(detail.wallet, 8)}</a>
+                  <span style={{ color: KIND_BADGE[detail.kind].color }}>{KIND_BADGE[detail.kind].label}</span>
+                  {detail.groupId !== null && <span className="chip" style={{ color: "var(--accent)" }}>G{detail.groupId}</span>}
+                  <span style={{ color: "var(--ink-3)" }}>{detail.tokensCount} tokens · {(detail.ubiquityRatio * 100).toFixed(0)}%</span>
+                </div>
+                <div>
+                  <div style={{ color: "var(--ink-3)", fontSize: 10, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".1em" }}>Tokens comprados ({detail.tokens.length})</div>
+                  {detail.tokens.map((t) => (
+                    <div key={t.mint} style={{ display: "flex", gap: 10, padding: "3px 0", color: "var(--ink-2)" }}>
+                      <a href={`https://solscan.io/token/${t.mint}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink)", flex: 1, textDecoration: "none" }}>{t.symbol ?? shortenAddress(t.mint, 5)}</a>
+                      <span style={{ color: "var(--ink-3)" }}>#{t.rank}</span>
+                      <span style={{ color: "var(--warn)" }}>{t.solIn.toFixed(3)} SOL</span>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div style={{ color: "var(--ink-3)", fontSize: 10, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".1em" }}>Co-buyers ({detail.coBuyers.length})</div>
+                  {detail.coBuyers.length === 0 ? (
+                    <span style={{ color: "var(--ink-3)" }}>Sin co-ocurrencias significativas.</span>
+                  ) : detail.coBuyers.map((c) => (
+                    <div key={c.wallet} style={{ display: "flex", gap: 10, padding: "3px 0", alignItems: "center" }}>
+                      <button onClick={() => openDetail(c.wallet)} style={{ background: "none", border: "none", padding: 0, color: "var(--ink)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 11.5, flex: 1, textAlign: "left" }}>{shortenAddress(c.wallet, 6)}</button>
+                      <span style={{ color: "var(--ink-3)" }}>{c.shared} en común</span>
+                      <span style={{ color: "var(--accent)" }}>lift {c.lift.toFixed(1)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

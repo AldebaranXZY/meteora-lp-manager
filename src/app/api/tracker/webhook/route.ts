@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getMonitoredWallets, insertAlert, alertExists } from "@/lib/tracker/db";
+import { getMonitoredWallets, insertAlert, alertExists, pruneAlerts } from "@/lib/tracker/db";
 import { detectPumpBuys, type HeliusEnhancedTx } from "@/lib/tracker/pumpfun";
 
 export const runtime = "nodejs";
@@ -15,7 +15,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   try {
     const payload = await request.json();
-    const txs: HeliusEnhancedTx[] = Array.isArray(payload) ? payload : [payload];
+    const raw = Array.isArray(payload) ? payload : [payload];
+    // Validación mínima: descartar entradas que no sean objetos tx.
+    const txs = raw.filter((t): t is HeliusEnhancedTx => !!t && typeof t === "object");
     const monitored = new Set(getMonitoredWallets());
     if (monitored.size === 0) return NextResponse.json({ ok: true, inserted: 0 });
 
@@ -33,6 +35,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         inserted++;
       }
     }
+    if (inserted > 0) pruneAlerts();
     return NextResponse.json({ ok: true, inserted });
   } catch (err: unknown) {
     console.error("[tracker/webhook]", err);

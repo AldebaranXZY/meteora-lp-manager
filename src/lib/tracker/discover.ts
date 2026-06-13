@@ -1,4 +1,5 @@
 import type { DiscoveredToken } from "./types";
+import { fetchJSON } from "./http";
 
 // ─── Discover: top memecoins pump.fun (Jupiter Token API V2) ─────────────────
 // Antes usaba Bitquery (consumía créditos). Jupiter Token API V2 es GRATIS y sin
@@ -51,9 +52,7 @@ export async function getTopTokens(mode: DiscoverMode): Promise<DiscoveredToken[
   const cached = _cache.get(mode);
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
 
-  const res = await fetch(URLS[mode]);
-  if (!res.ok) throw new Error(`Jupiter ${res.status}: ${await res.text().catch(() => "")}`);
-  const arr = await res.json();
+  const arr = await fetchJSON<unknown>(URLS[mode], { label: "Jupiter" });
 
   const out = (Array.isArray(arr) ? (arr as JupToken[]) : [])
     .filter((t) => typeof t.id === "string" && t.id.endsWith("pump")) // pump.fun

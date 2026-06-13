@@ -25,6 +25,18 @@ export interface PumpBuy {
   blockTime: number;
 }
 
+/** Match de una compra pump.fun parseada de un tx enhanced. */
+export interface PumpBuyMatch {
+  wallet: string;
+  mint: string;
+  solIn: number;
+  tokensOut: number;
+}
+
+// Piso de SOL para considerar "pagó" (descarta transfers/airdrops sin pago).
+// Único punto de verdad para AMBOS paths (indexer offline + webhook en vivo).
+export const MIN_SOL_IN = 0;
+
 function involvesPumpFun(tx: HeliusEnhancedTx): boolean {
   if (tx.source === "PUMP_FUN") return true;
   const scan = (ix?: HeliusInstruction[]): boolean =>
@@ -33,24 +45,39 @@ function involvesPumpFun(tx: HeliusEnhancedTx): boolean {
 }
 
 /**
- * Heurística: una wallet monitoreada "compró" si recibió tokens (tokenTransfer.to)
- * en un tx que toca el programa de pump.fun, y gastó SOL en esa misma tx.
+ * Predicado ÚNICO de compra (validado contra datos reales): el `feePayer` RECIBIÓ
+ * el token y PAGÓ SOL. Usado por el indexer (offline) y el webhook (en vivo) para
+ * que ambos coincidan exactamente — antes divergían y el webhook contaba airdrops.
+ *
+ * Si se pasa `mint`, exige que sea ese token; si se omite, detecta compra de
+ * CUALQUIER mint (el webhook no sabe de antemano qué se compró).
+ *
+ * Nota: se ancla al `feePayer` (quien inició y pagó la tx). El caso raro de un
+ * relayer/bundle que paga por otra wallet queda fuera — no aplica a buys directos
+ * de la bonding curve de pump.fun.
+ */
+export function pumpBuyOf(tx: HeliusEnhancedTx, mint?: string): PumpBuyMatch | null {
+  const buyer = tx.feePayer;
+  if (!buyer) return null;
+  const received = (tx.tokenTransfers ?? []).find(
+    (tt) => tt.toUserAccount === buyer && (mint ? tt.mint === mint : !!tt.mint)
+  );
+  if (!received || !received.mint) return null;
+  const solIn = (tx.nativeTransfers ?? [])
+    .filter((n) => n.fromUserAccount === buyer)
+    .reduce((s, n) => s + (n.amount ?? 0), 0) / 1e9;
+  if (solIn <= MIN_SOL_IN) return null; // pagó SOL → compra real (descarta transfers/airdrops)
+  return { wallet: buyer, mint: received.mint, solIn, tokensOut: received.tokenAmount ?? 0 };
+}
+
+/**
+ * Compra pump.fun de una wallet MONITOREADA, para el receptor del webhook.
+ * Gate de pertenencia al programa (el webhook ve txs arbitrarias) + el mismo
+ * predicado `pumpBuyOf` que el indexer → un airdrop (solIn=0) ya NO genera alerta.
  */
 export function detectPumpBuys(tx: HeliusEnhancedTx, monitored: Set<string>): PumpBuy[] {
   if (!involvesPumpFun(tx)) return [];
-  const signature = tx.signature ?? "";
-  const blockTime = tx.timestamp ?? 0;
-  const out: PumpBuy[] = [];
-  const seen = new Set<string>();
-
-  for (const tt of tx.tokenTransfers ?? []) {
-    const wallet = tt.toUserAccount;
-    if (!wallet || !tt.mint || !monitored.has(wallet) || seen.has(wallet)) continue;
-    seen.add(wallet);
-    const solIn = (tx.nativeTransfers ?? [])
-      .filter((n) => n.fromUserAccount === wallet)
-      .reduce((s, n) => s + (n.amount ?? 0), 0) / 1e9;
-    out.push({ wallet, mint: tt.mint, solIn, signature, blockTime });
-  }
-  return out;
+  const b = pumpBuyOf(tx);
+  if (!b || !monitored.has(b.wallet)) return [];
+  return [{ wallet: b.wallet, mint: b.mint, solIn: b.solIn, signature: tx.signature ?? "", blockTime: tx.timestamp ?? 0 }];
 }
