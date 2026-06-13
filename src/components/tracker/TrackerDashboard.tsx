@@ -36,6 +36,7 @@ export default function TrackerDashboard() {
   const [ca, setCa] = useState("");
   const [limit, setLimit] = useState("1000");
   const [analyzing, setAnalyzing] = useState(false);
+  const [deepAnalyzing, setDeepAnalyzing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [minTokens, setMinTokens] = useState(2);
@@ -129,6 +130,25 @@ export default function TrackerDashboard() {
     }
   };
 
+  const deepAnalyze = async (mint: string) => {
+    setDeepAnalyzing(mint); setError(null);
+    try {
+      const res = await fetch("/api/tracker/deep-analyze", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mint }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.error) throw new Error(d.error ?? "Error");
+      if (d.recomputeStats) setRecomputeStats(d.recomputeStats);
+      await loadTokens();
+      await loadWallets(minTokens);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Error");
+    } finally {
+      setDeepAnalyzing(null);
+    }
+  };
+
   const openDetail = async (wallet: string) => {
     setDetailLoading(true); setDetail(null);
     try {
@@ -174,9 +194,11 @@ export default function TrackerDashboard() {
     }
   };
 
+  // "Rentable" = buen win-rate (buen picker) O PnL realizado positivo (plata real).
+  const isProfitable = (w: WalletRow) => (w.plays >= 2 && w.winRate >= 0.5) || w.realizedPnl > 0;
   const visibleWallets = wallets
     .filter((w) => showBots || w.kind !== "universal_sniper")
-    .filter((w) => !onlyProfitable || (w.plays >= 2 && w.winRate >= 0.5));
+    .filter((w) => !onlyProfitable || isProfitable(w));
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -239,7 +261,12 @@ export default function TrackerDashboard() {
                         <span title="desenlace del token (para win-rate)" style={{ color: OUTCOME_BADGE[t.outcome].color, fontSize: 9.5, fontWeight: 600 }}>{OUTCOME_BADGE[t.outcome].label}</span>
                       )}
                       {info?.dexes.map((d) => <span key={d} className="chip" style={{ padding: "1px 6px", fontSize: 9, cursor: "default" }}>{d}</span>)}
-                      <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                      <span style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+                        <button onClick={() => deepAnalyze(t.mint)} disabled={deepAnalyzing === t.mint}
+                          title={t.deepAnalyzed ? "ledger bajado — recalcular PnL realizado" : "bajar ledger completo (buys+sells) y computar PnL realizado — CARO, parsea todas las firmas"}
+                          className="chip" style={{ cursor: "pointer", fontSize: 9, color: t.deepAnalyzed ? "var(--accent)" : "var(--ink-2)", opacity: deepAnalyzing === t.mint ? 0.6 : 1 }}>
+                          {deepAnalyzing === t.mint ? "PnL…" : t.deepAnalyzed ? "PnL ✓" : "PnL"}
+                        </button>
                         {info?.socials.slice(0, 3).map((s, i) => <a key={i} href={s.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink-3)", textDecoration: "none" }}>{socialLabel(s.type)}</a>)}
                         {info?.websites[0] && <a href={info.websites[0].url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--ink-3)" }}>web</a>}
                       </span>
@@ -338,7 +365,7 @@ export default function TrackerDashboard() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {visibleWallets.map((w) => (
-                <div key={w.wallet} style={{ display: "grid", gridTemplateColumns: "1fr 64px 74px 46px 64px 60px", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: w.isIgnored ? "rgba(255,255,255,.02)" : "rgba(255,255,255,.04)", opacity: w.isIgnored ? 0.45 : 1, fontFamily: "var(--mono)", fontSize: 11.5 }}>
+                <div key={w.wallet} style={{ display: "grid", gridTemplateColumns: "1fr 60px 66px 66px 60px 56px", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: w.isIgnored ? "rgba(255,255,255,.02)" : "rgba(255,255,255,.04)", opacity: w.isIgnored ? 0.45 : 1, fontFamily: "var(--mono)", fontSize: 11.5 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                     <button onClick={() => openDetail(w.wallet)} title="ver detalle (tokens + co-buyers)"
                       style={{ background: "none", border: "none", padding: 0, color: "var(--ink)", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 11.5 }}>
@@ -349,7 +376,10 @@ export default function TrackerDashboard() {
                   </div>
                   <span style={{ color: KIND_BADGE[w.kind].color }}>{KIND_BADGE[w.kind].label}</span>
                   <span style={{ color: "var(--ink-2)" }}>{w.tokensCount} tokens</span>
-                  <span style={{ color: "var(--ink-3)" }}>{(w.ubiquityRatio * 100).toFixed(0)}%</span>
+                  <span title={w.pnlTokens > 0 ? `PnL realizado ${w.realizedPnl.toFixed(3)} SOL (${w.pnlTokens} tokens con ledger). Tocá "PnL" en un token para bajarlo.` : "sin deep-analyze: tocá \"PnL\" en un token para computar PnL realizado"}
+                    style={{ textAlign: "right", color: w.pnlTokens === 0 ? "var(--ink-3)" : w.realizedPnl >= 0 ? "var(--accent)" : "var(--danger)" }}>
+                    {w.pnlTokens > 0 ? `${w.realizedPnl >= 0 ? "+" : ""}${w.realizedPnl.toFixed(1)}◎` : "—"}
+                  </span>
                   <span title={w.plays > 0 ? `win-rate ${(w.winRate * 100).toFixed(0)}% — ${w.wins}/${w.plays} tokens con desenlace` : "sin tokens con desenlace todavía"}
                     style={{ textAlign: "right", color: w.plays >= 2 && w.winRate >= 0.5 ? "var(--accent)" : "var(--ink-3)" }}>
                     {w.plays > 0 ? `${w.wins}/${w.plays} ${(w.winRate * 100).toFixed(0)}%` : "—"}
@@ -410,6 +440,9 @@ export default function TrackerDashboard() {
                   <span title="win-rate sobre tokens con desenlace" style={{ color: detail.plays >= 2 && detail.winRate >= 0.5 ? "var(--accent)" : "var(--ink-3)" }}>
                     win-rate {detail.plays > 0 ? `${(detail.winRate * 100).toFixed(0)}% (${detail.wins}/${detail.plays})` : "s/d"}
                   </span>
+                  <span title="PnL realizado en SOL (tokens con ledger)" style={{ color: detail.pnlTokens === 0 ? "var(--ink-3)" : detail.realizedPnl >= 0 ? "var(--accent)" : "var(--danger)" }}>
+                    PnL {detail.pnlTokens > 0 ? `${detail.realizedPnl >= 0 ? "+" : ""}${detail.realizedPnl.toFixed(2)} SOL` : "s/d"}
+                  </span>
                 </div>
                 <div>
                   <div style={{ color: "var(--ink-3)", fontSize: 10, marginBottom: 5, textTransform: "uppercase", letterSpacing: ".1em" }}>Tokens comprados ({detail.tokens.length})</div>
@@ -419,6 +452,11 @@ export default function TrackerDashboard() {
                       <span style={{ color: OUTCOME_BADGE[t.outcome].color, fontSize: 10 }}>{OUTCOME_BADGE[t.outcome].label}</span>
                       <span style={{ color: "var(--ink-3)" }}>#{t.rank}</span>
                       <span style={{ color: "var(--warn)" }}>{t.solIn.toFixed(3)} SOL</span>
+                      {t.realizedPnl !== null && (
+                        <span title="PnL realizado de este token" style={{ color: t.realizedPnl >= 0 ? "var(--accent)" : "var(--danger)", minWidth: 64, textAlign: "right" }}>
+                          {t.realizedPnl >= 0 ? "+" : ""}{t.realizedPnl.toFixed(2)}◎
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>

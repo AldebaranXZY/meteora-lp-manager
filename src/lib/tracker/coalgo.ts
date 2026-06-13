@@ -163,6 +163,40 @@ export function classifyOutcome(
   return "pending";
 }
 
+// ─── PnL realizado on-curve (la mitad "data dura" de profitabilidad) ─────────
+
+export interface WalletPnL { realizedPnl: number; pnlTokens: number }
+
+/**
+ * PnL realizado en SOL por wallet, a partir del ledger de trades. Por (wallet,
+ * token): costo promedio = SOL gastado en compras / tokens comprados; realizado =
+ * SOL recibido en ventas − costoPromedio × tokens vendidos. Suma sobre tokens.
+ * Solo cuenta lo REALIZADO (vendido) — una wallet que compró y todavía tiene no
+ * suma ganancia hasta vender (no se adivina con precio).
+ */
+export function computeRealizedPnL(
+  rows: { wallet: string; token: string; side: "buy" | "sell"; sol: number; tokens: number }[]
+): Map<string, WalletPnL> {
+  const byPair = new Map<string, { wallet: string; solBuy: number; tokBuy: number; solSell: number; tokSell: number }>();
+  for (const r of rows) {
+    const key = r.wallet + "|" + r.token;
+    let e = byPair.get(key);
+    if (!e) { e = { wallet: r.wallet, solBuy: 0, tokBuy: 0, solSell: 0, tokSell: 0 }; byPair.set(key, e); }
+    if (r.side === "buy") { e.solBuy += r.sol; e.tokBuy += r.tokens; }
+    else { e.solSell += r.sol; e.tokSell += r.tokens; }
+  }
+  const out = new Map<string, WalletPnL>();
+  for (const e of byPair.values()) {
+    const avgCost = e.tokBuy > 0 ? e.solBuy / e.tokBuy : 0;
+    const realized = e.solSell - avgCost * e.tokSell; // costo de los tokens vendidos
+    let w = out.get(e.wallet);
+    if (!w) { w = { realizedPnl: 0, pnlTokens: 0 }; out.set(e.wallet, w); }
+    w.realizedPnl += realized;
+    w.pnlTokens += 1;
+  }
+  return out;
+}
+
 export interface WinRate { wins: number; plays: number; winRate: number }
 
 /**

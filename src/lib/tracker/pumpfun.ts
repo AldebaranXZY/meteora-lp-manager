@@ -70,6 +70,49 @@ export function pumpBuyOf(tx: HeliusEnhancedTx, mint?: string): PumpBuyMatch | n
   return { wallet: buyer, mint: received.mint, solIn, tokensOut: received.tokenAmount ?? 0 };
 }
 
+/** Match de una venta pump.fun: el `feePayer` ENVIÓ el token y RECIBIÓ SOL. */
+export interface PumpSellMatch {
+  wallet: string;
+  mint: string;
+  solOut: number;   // SOL recibido por la venta
+  tokensIn: number; // tokens que salieron de la wallet (vendidos)
+}
+
+/**
+ * Predicado de venta, espejo de `pumpBuyOf`: el `feePayer` mandó el token a la
+ * curva y recibió SOL. Junto con la compra permite el ledger completo (PnL real).
+ */
+export function pumpSellOf(tx: HeliusEnhancedTx, mint?: string): PumpSellMatch | null {
+  const seller = tx.feePayer;
+  if (!seller) return null;
+  const sent = (tx.tokenTransfers ?? []).find(
+    (tt) => tt.fromUserAccount === seller && (mint ? tt.mint === mint : !!tt.mint)
+  );
+  if (!sent || !sent.mint) return null;
+  const solOut = (tx.nativeTransfers ?? [])
+    .filter((n) => n.toUserAccount === seller)
+    .reduce((s, n) => s + (n.amount ?? 0), 0) / 1e9;
+  if (solOut <= MIN_SOL_IN) return null; // recibió SOL → venta real
+  return { wallet: seller, mint: sent.mint, solOut, tokensIn: sent.tokenAmount ?? 0 };
+}
+
+/** Trade pump.fun (compra o venta) del feePayer — reusa los predicados únicos. */
+export interface PumpTrade {
+  wallet: string;
+  mint: string;
+  side: "buy" | "sell";
+  sol: number;     // SOL gastado (buy) o recibido (sell)
+  tokens: number;  // tokens recibidos (buy) o vendidos (sell)
+}
+
+export function pumpTradeOf(tx: HeliusEnhancedTx, mint?: string): PumpTrade | null {
+  const b = pumpBuyOf(tx, mint);
+  if (b) return { wallet: b.wallet, mint: b.mint, side: "buy", sol: b.solIn, tokens: b.tokensOut };
+  const s = pumpSellOf(tx, mint);
+  if (s) return { wallet: s.wallet, mint: s.mint, side: "sell", sol: s.solOut, tokens: s.tokensIn };
+  return null;
+}
+
 /**
  * Compra pump.fun de una wallet MONITOREADA, para el receptor del webhook.
  * Gate de pertenencia al programa (el webhook ve txs arbitrarias) + el mismo
