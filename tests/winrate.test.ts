@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { classifyOutcome, computeWinRates } from "../src/lib/tracker/coalgo.ts";
 import type { TokenOutcome } from "../src/lib/tracker/types.ts";
 
-const opts = { winnerMinMcap: 60_000, winnerMinLiq: 10_000, rugMaxLiq: 1_000, rugMaxMcap: 15_000 };
+const opts = { winnerMinMcap: 60_000, rugMaxLiq: 1_000, rugMaxMcap: 15_000 };
 const info = (o: Partial<{ mcap: number; liquidityUsd: number; volume24h: number; dexes: string[] }>) =>
   ({ mcap: 0, liquidityUsd: 0, volume24h: 0, dexes: [], ...o });
 
@@ -13,6 +13,11 @@ test("classifyOutcome: mcap alto → winner", () => {
 
 test("classifyOutcome: migrado a AMM real con liquidez → winner", () => {
   assert.equal(classifyOutcome(info({ mcap: 40_000, liquidityUsd: 25_000, dexes: ["raydium"] }), opts), "winner");
+});
+
+test("classifyOutcome: migrado (graduó) aunque la liquidez actual sea baja → winner", () => {
+  // Caso real (XMkc): graduó a PumpSwap y después bajó. El pick fue bueno → winner.
+  assert.equal(classifyOutcome(info({ mcap: 1_468, liquidityUsd: 2_645, volume24h: 1, dexes: ["pumpswap"] }), opts), "winner");
 });
 
 test("classifyOutcome: liquidez y mcap muertos → rug", () => {

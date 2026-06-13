@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import type {
   TrackedToken, EarlyBuyer, WalletRow, WalletKind, TrackerAlert, AnalyzeStats,
   GroupSummary, WalletDetail, WalletTokenHit, CoBuyer, TokenOutcome, Trade,
@@ -13,9 +13,10 @@ let _db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (_db) return _db;
-  const dir = join(process.cwd(), "data");
-  mkdirSync(dir, { recursive: true });
-  const db = new Database(join(dir, "tracker.db"));
+  // TRACKER_DB_PATH permite apuntar a una DB aislada (tests). Default: data/tracker.db.
+  const dbPath = process.env.TRACKER_DB_PATH || join(process.cwd(), "data", "tracker.db");
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.exec(SCHEMA);
   migrate(db);
@@ -291,33 +292,43 @@ export function getGroupWallets(groupId: number): string[] {
   return (getDb().prepare(`SELECT wallet FROM wallet_groups WHERE group_id = ? ORDER BY wallet`).all(groupId) as { wallet: string }[]).map((r) => r.wallet);
 }
 
-/** Detalle de una wallet: tokens en los que fue early buyer + co-buyers + grupo. */
+/** Detalle de una wallet: tokens (early buyer Y/O tradeados) + co-buyers + grupo. */
 export function getWalletDetail(wallet: string): WalletDetail | null {
   const db = getDb();
   const w = db.prepare(`SELECT * FROM wallets WHERE wallet = ?`).get(wallet) as WalletRowRaw | undefined;
   if (!w) return null;
 
-  const rawTokens = db.prepare(
+  const ebTokens = db.prepare(
     `SELECT eb.token_mint AS mint, t.symbol AS symbol, eb.rank AS rank, eb.sol_in AS solIn,
             eb.block_time AS blockTime, COALESCE(t.outcome, 'pending') AS outcome
      FROM early_buyers eb LEFT JOIN tokens t ON t.mint = eb.token_mint
-     WHERE eb.wallet = ? ORDER BY eb.block_time ASC`
-  ).all(wallet) as Omit<WalletTokenHit, "realizedPnl">[];
+     WHERE eb.wallet = ?`
+  ).all(wallet) as { mint: string; symbol: string | null; rank: number; solIn: number; blockTime: number; outcome: string }[];
+  const ebMints = new Set(ebTokens.map((t) => t.mint));
 
   // PnL realizado por token (de los que tienen ledger): costo prom × tokens vendidos.
+  // Incluye symbol/outcome/blockTime para poder listar tokens TRADEADOS donde la
+  // wallet NO fue early buyer → así el desglose cuadra con el PnL total del header.
   const pnlRows = db.prepare(
-    `SELECT token_mint AS token,
-            SUM(CASE WHEN side = 'buy'  THEN sol    ELSE 0 END) AS solBuy,
-            SUM(CASE WHEN side = 'buy'  THEN tokens ELSE 0 END) AS tokBuy,
-            SUM(CASE WHEN side = 'sell' THEN sol    ELSE 0 END) AS solSell,
-            SUM(CASE WHEN side = 'sell' THEN tokens ELSE 0 END) AS tokSell
-     FROM trades WHERE wallet = ? GROUP BY token_mint`
-  ).all(wallet) as { token: string; solBuy: number; tokBuy: number; solSell: number; tokSell: number }[];
+    `SELECT tr.token_mint AS token, t.symbol AS symbol, COALESCE(t.outcome, 'pending') AS outcome,
+            MIN(tr.block_time) AS blockTime,
+            SUM(CASE WHEN side = 'buy'  THEN tr.sol    ELSE 0 END) AS solBuy,
+            SUM(CASE WHEN side = 'buy'  THEN tr.tokens ELSE 0 END) AS tokBuy,
+            SUM(CASE WHEN side = 'sell' THEN tr.sol    ELSE 0 END) AS solSell,
+            SUM(CASE WHEN side = 'sell' THEN tr.tokens ELSE 0 END) AS tokSell
+     FROM trades tr LEFT JOIN tokens t ON t.mint = tr.token_mint
+     WHERE tr.wallet = ? GROUP BY tr.token_mint`
+  ).all(wallet) as { token: string; symbol: string | null; outcome: string; blockTime: number; solBuy: number; tokBuy: number; solSell: number; tokSell: number }[];
   const pnlByToken = new Map(pnlRows.map((r) => {
     const avg = r.tokBuy > 0 ? r.solBuy / r.tokBuy : 0;
     return [r.token, r.solSell - avg * r.tokSell];
   }));
-  const tokens: WalletTokenHit[] = rawTokens.map((t) => ({ ...t, realizedPnl: pnlByToken.get(t.mint) ?? null }));
+
+  const tokens: WalletTokenHit[] = [
+    ...ebTokens.map((t) => ({ mint: t.mint, symbol: t.symbol, rank: t.rank, solIn: t.solIn, blockTime: t.blockTime, outcome: t.outcome as TokenOutcome, realizedPnl: pnlByToken.get(t.mint) ?? null })),
+    // Tokens SOLO tradeados (no early-buyer) → rank/solIn null, con su PnL.
+    ...pnlRows.filter((r) => !ebMints.has(r.token)).map((r) => ({ mint: r.token, symbol: r.symbol, rank: null, solIn: null, blockTime: r.blockTime, outcome: r.outcome as TokenOutcome, realizedPnl: pnlByToken.get(r.token) ?? null })),
+  ].sort((a, b) => (a.blockTime ?? 0) - (b.blockTime ?? 0));
 
   // Co-buyers: pares donde la wallet es a o b. shared/lift/weight ya calculados.
   const coBuyers = (db.prepare(

@@ -144,21 +144,26 @@ export function classify(
 // ─── Win-rate: traders que aciertan (la mitad "comportamental" de profitabilidad) ─
 
 export interface OutcomeOpts {
-  winnerMinMcap: number; winnerMinLiq: number; rugMaxLiq: number; rugMaxMcap: number;
+  winnerMinMcap: number; rugMaxLiq: number; rugMaxMcap: number;
 }
 
 /**
- * Clasifica el desenlace de un token con data de DexScreener. 'winner' = migró a
- * un AMM real con liquidez o mcap alto (graduó); 'rug' = liquidez/mcap muertos;
- * 'pending' = todavía en la curva, o sin data (no concluir). NO usa precio para
- * adivinar PnL — es una señal de desenlace, no de ganancia.
+ * Clasifica el desenlace de un token con data de DexScreener. 'winner' = GRADUÓ
+ * (migró a un AMM real: el hito de éxito de pump.fun, ~1% lo logra) o tiene mcap
+ * alto; 'rug' = liquidez/mcap muertos sin migrar; 'pending' = todavía en la curva,
+ * o sin data (no concluir).
+ *
+ * Clave (validado con data real): la graduación cuenta como winner SIN importar la
+ * liquidez actual. Un token que graduó y después bajó sigue siendo un buen "pick"
+ * (el early buyer tuvo ventana de ganancia); que haya salido bien o no es tema del
+ * PnL realizado, no del win-rate. NO usa precio para adivinar PnL.
  */
 export function classifyOutcome(
   info: { mcap: number; liquidityUsd: number; volume24h: number; dexes: string[] }, opts: OutcomeOpts
 ): TokenOutcome {
   if (info.mcap === 0 && info.liquidityUsd === 0 && info.volume24h === 0) return "pending"; // sin data
   const onRealDex = info.dexes.some((d) => { const x = d.toLowerCase(); return x !== "pumpfun" && x !== "pump"; });
-  if (info.mcap >= opts.winnerMinMcap || (onRealDex && info.liquidityUsd >= opts.winnerMinLiq)) return "winner";
+  if (onRealDex || info.mcap >= opts.winnerMinMcap) return "winner"; // graduó o mcap alto
   if (info.liquidityUsd < opts.rugMaxLiq && info.mcap < opts.rugMaxMcap) return "rug";
   return "pending";
 }

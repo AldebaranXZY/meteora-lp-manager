@@ -122,8 +122,8 @@ export interface GroupSummary {
 export interface WalletTokenHit {
   mint: string;
   symbol: string | null;
-  rank: number;
-  solIn: number;
+  rank: number | null;             // null si la wallet tradeó el token pero no fue early buyer
+  solIn: number | null;            // SOL de la 1ª compra (null si solo hay trades, sin early-buyer row)
   blockTime: number;
   outcome: TokenOutcome;           // desenlace del token (winner/rug/pending)
   realizedPnl: number | null;      // PnL realizado en SOL para este token (null si no hay trades)

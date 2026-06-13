@@ -23,10 +23,9 @@ export const TIMING_RANK_WEIGHT = 1;      // peso del bonus por cercanía de ran
 export const TIMING_TIME_WEIGHT = 1;      // peso del bonus por cercanía temporal (segundos)
 
 // ── Outcome de token (ganó / rugueó) para win-rate ──
-// pump.fun migra/gradúa cerca de ~$69k mcap → mcap alto o AMM real con liquidez = ganador.
-export const WINNER_MIN_MCAP_USD = 60_000;  // mcap actual que cuenta como ganador
-export const WINNER_MIN_LIQ_USD = 10_000;   // liquidez en un AMM real (post-migración)
-export const RUG_MAX_LIQ_USD = 1_000;       // liquidez por debajo de esto = muerto
+// pump.fun gradúa (migra a un AMM real) cerca de ~$69k mcap → migración = winner.
+export const WINNER_MIN_MCAP_USD = 60_000;  // mcap actual alto que cuenta como ganador (aunque no se vea migración)
+export const RUG_MAX_LIQ_USD = 1_000;       // liquidez por debajo de esto (sin migrar) = muerto
 export const RUG_MAX_MCAP_USD = 15_000;     // mcap por debajo de esto (+ poca liq) = rug
 
 // ── Alerts (retención) ──

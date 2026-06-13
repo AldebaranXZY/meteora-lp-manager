@@ -3,7 +3,7 @@ import { recompute } from "@/lib/tracker/cooccurrence";
 import { getAnalyzedTokenMints, setTokenOutcomes } from "@/lib/tracker/db";
 import { getTokensInfo } from "@/lib/tracker/dexscreener";
 import { classifyOutcome } from "@/lib/tracker/coalgo";
-import { WINNER_MIN_MCAP_USD, WINNER_MIN_LIQ_USD, RUG_MAX_LIQ_USD, RUG_MAX_MCAP_USD } from "@/lib/tracker/config";
+import { WINNER_MIN_MCAP_USD, RUG_MAX_LIQ_USD, RUG_MAX_MCAP_USD } from "@/lib/tracker/config";
 
 export const runtime = "nodejs";
 
@@ -19,7 +19,7 @@ export async function POST(): Promise<NextResponse> {
     if (mints.length > 0) {
       const infos = await getTokensInfo(mints);
       const opts = {
-        winnerMinMcap: WINNER_MIN_MCAP_USD, winnerMinLiq: WINNER_MIN_LIQ_USD,
+        winnerMinMcap: WINNER_MIN_MCAP_USD,
         rugMaxLiq: RUG_MAX_LIQ_USD, rugMaxMcap: RUG_MAX_MCAP_USD,
       };
       setTokenOutcomes(mints.map((mint) => ({ mint, outcome: classifyOutcome(infos[mint] ?? { mcap: 0, liquidityUsd: 0, volume24h: 0, dexes: [] }, opts) })));
