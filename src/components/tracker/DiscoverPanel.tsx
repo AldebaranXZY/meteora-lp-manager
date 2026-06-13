@@ -49,6 +49,8 @@ export default function DiscoverPanel({ onAdded }: { onAdded: () => void }) {
         });
         setAdding({ done: i + 1, total: mints.length });
       }
+      // Recompute UNA sola vez al terminar el batch (antes /analyze recalculaba por token).
+      await fetch("/api/tracker/recompute", { method: "POST" });
       setSelected(new Set());
       onAdded();
     } catch (err: unknown) {

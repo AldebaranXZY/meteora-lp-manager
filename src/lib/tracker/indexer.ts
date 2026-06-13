@@ -1,6 +1,8 @@
-import type { EarlyBuyer } from "./types";
+import type { EarlyBuyer, AnalyzeResult } from "./types";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { PUMP_FUN_PROGRAM, type HeliusEnhancedTx } from "./pumpfun";
+import { PUMP_FUN_PROGRAM, pumpBuyOf, type HeliusEnhancedTx } from "./pumpfun";
+import { fetchJSON, retry } from "./http";
+import { MAX_SIGNATURE_PAGES, ENHANCED_BATCH, ENHANCED_CONCURRENCY, MIGRATION_STALE_SEC } from "./config";
 
 // ─── Early buyers de un token (on-chain vía Helius) ──────────────────────────
 // Antes esto usaba Bitquery, pero el EAP free tier cuenta los trades pero solo
@@ -8,12 +10,19 @@ import { PUMP_FUN_PROGRAM, type HeliusEnhancedTx } from "./pumpfun";
 // tokens activos/migrados (lo detectó scripts/test-discover.mjs). Helius da la
 // historia on-chain completa y determinística.
 //
-// Estrategia: paginar getSignaturesForAddress(mint) hasta las firmas más viejas,
-// parsear desde el origen con la Enhanced Transactions API y quedarse con las
-// primeras `limit` COMPRAS pump.fun (wallet recibe el token y paga SOL).
-
-const MAX_PAGES = 30;        // tope de paginación (30k firmas) para acotar costo
-const ENHANCED_BATCH = 100;  // máx por request de la Enhanced API
+// Estrategia: paginar getSignaturesForAddress(bondingCurve) hasta el GÉNESIS
+// (firma más vieja), parsear desde el origen con la Enhanced Transactions API y
+// quedarse con las primeras `limit` COMPRAS pump.fun (wallet recibe el token y
+// paga SOL).
+//
+// CLAVE (fix de truncado): getSignaturesForAddress devuelve nuevas→viejas y
+// pagina hacia atrás con `before`. Con un tope bajo (antes 30 páginas = 30k
+// firmas) un token muy activo nunca llegaba al génesis: el reverse() tomaba como
+// "rank 1" una firma de la MITAD de su vida → early buyers equivocados, SILENCIOSO.
+// Ahora el tope es alto (corte normal = batch < 1000 = génesis real) y si igual se
+// agota se marca `hitPageCap` → el truncado deja de ser invisible. La paginación
+// de firmas es BARATA (no trae cuerpos de tx); lo caro es la Enhanced API, que ya
+// se corta al juntar `limit` buyers → llegar al génesis no encarece el parseo.
 
 function heliusKey(): string {
   const k = process.env.HELIUS_API_KEY;
@@ -22,39 +31,22 @@ function heliusKey(): string {
 }
 
 async function fetchEnhanced(signatures: string[]): Promise<HeliusEnhancedTx[]> {
-  const res = await fetch(`https://api.helius.xyz/v0/transactions?api-key=${heliusKey()}`, {
+  const data = await fetchJSON<unknown>(`https://api.helius.xyz/v0/transactions?api-key=${heliusKey()}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ transactions: signatures }),
+    label: "Helius enhanced",
   });
-  if (!res.ok) throw new Error(`Helius enhanced ${res.status}: ${await res.text().catch(() => "")}`);
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
-}
-
-/**
- * Si el tx es una compra del `mint`, devuelve el comprador.
- * Criterio (validado contra datos reales): el feePayer RECIBIÓ el token y PAGÓ SOL.
- * No filtramos por type/source: Helius etiqueta muchas compras de la bonding curve
- * como TRANSFER/SYSTEM_PROGRAM, no como SWAP/PUMP_FUN.
- */
-function pumpBuyerOf(tx: HeliusEnhancedTx, mint: string): { wallet: string; solIn: number; tokensOut: number } | null {
-  const buyer = tx.feePayer;
-  if (!buyer) return null;
-  const received = (tx.tokenTransfers ?? []).find((tt) => tt.mint === mint && tt.toUserAccount === buyer);
-  if (!received) return null;
-  const solIn = (tx.nativeTransfers ?? [])
-    .filter((n) => n.fromUserAccount === buyer)
-    .reduce((s, n) => s + (n.amount ?? 0), 0) / 1e9;
-  if (solIn <= 0) return null; // pagó SOL → compra real (descarta transfers/airdrops)
-  return { wallet: buyer, solIn, tokensOut: received.tokenAmount ?? 0 };
+  return Array.isArray(data) ? (data as HeliusEnhancedTx[]) : [];
 }
 
 /**
  * Primeras `limit` compras del token, deduplicadas a la PRIMERA compra por wallet
- * y rankeadas cronológicamente.
+ * y rankeadas cronológicamente, junto con un diagnóstico (`AnalyzeStats`) que
+ * expone cobertura, truncado y migración.
  */
-export async function getEarlyBuyers(mint: string, limit: number): Promise<EarlyBuyer[]> {
+export async function getEarlyBuyers(mint: string, limit: number): Promise<AnalyzeResult> {
+  const startedAt = Date.now();
   // pump.fun es MAINNET-only → conexión mainnet fija, sin importar
   // NEXT_PUBLIC_SOLANA_CLUSTER (que es para el toggle devnet del LP manager).
   const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${heliusKey()}`, "confirmed");
@@ -70,42 +62,79 @@ export async function getEarlyBuyers(mint: string, limit: number): Promise<Early
   // 1. Paginar firmas hasta las más viejas (la API devuelve nuevas→viejas).
   let before: string | undefined;
   const sigs: { signature: string; blockTime: number }[] = [];
-  for (let p = 0; p < MAX_PAGES; p++) {
-    const batch = await connection.getSignaturesForAddress(
-      bondingCurve,
-      before ? { limit: 1000, before } : { limit: 1000 }
+  let pagesUsed = 0;
+  let hitPageCap = false;
+  for (let p = 0; p < MAX_SIGNATURE_PAGES; p++) {
+    const batch = await retry(
+      () => connection.getSignaturesForAddress(bondingCurve, before ? { limit: 1000, before } : { limit: 1000 }),
+      3,
+      "getSignaturesForAddress"
     );
+    pagesUsed++;
     if (batch.length === 0) break;
     for (const s of batch) sigs.push({ signature: s.signature, blockTime: s.blockTime ?? 0 });
-    if (batch.length < 1000) break;
+    if (batch.length < 1000) break;                       // batch corto = génesis alcanzado
     before = batch[batch.length - 1].signature;
+    if (p === MAX_SIGNATURE_PAGES - 1) hitPageCap = true; // se agotó el tope SIN llegar al génesis
   }
   const chrono = sigs.reverse(); // viejas → nuevas
 
-  // 2. Parsear desde el origen hasta juntar `limit` compradores únicos.
+  // 2. Parsear desde el origen hasta juntar `limit` compradores únicos. Se fetchean
+  // hasta ENHANCED_CONCURRENCY batches en paralelo por ola, pero se PROCESAN en
+  // orden cronológico estricto (para rankear bien) y se corta al llegar a `limit`
+  // (over-fetch acotado a C-1 batches).
   const buyers: EarlyBuyer[] = [];
   const seen = new Set<string>();
-  for (let i = 0; i < chrono.length && buyers.length < limit; i += ENHANCED_BATCH) {
-    const slice = chrono.slice(i, i + ENHANCED_BATCH);
-    const parsed = await fetchEnhanced(slice.map((s) => s.signature));
-    const bySig = new Map(parsed.map((t) => [t.signature, t]));
-    // Recorrer en orden cronológico (la Enhanced API puede devolver desordenado).
-    for (const s of slice) {
-      const tx = bySig.get(s.signature);
-      if (!tx) continue;
-      const b = pumpBuyerOf(tx, mint);
-      if (!b || seen.has(b.wallet)) continue;
-      seen.add(b.wallet);
-      buyers.push({
-        wallet: b.wallet,
-        rank: buyers.length + 1,
-        solIn: b.solIn,
-        tokensOut: b.tokensOut,
-        blockTime: tx.timestamp ?? s.blockTime,
-        signature: s.signature,
-      });
-      if (buyers.length >= limit) break;
+  let enhancedTxParsed = 0;
+  const waveSize = ENHANCED_BATCH * ENHANCED_CONCURRENCY;
+  for (let i = 0; i < chrono.length && buyers.length < limit; i += waveSize) {
+    const slices: { signature: string; blockTime: number }[][] = [];
+    for (let c = 0; c < ENHANCED_CONCURRENCY; c++) {
+      const start = i + c * ENHANCED_BATCH;
+      if (start >= chrono.length) break;
+      slices.push(chrono.slice(start, start + ENHANCED_BATCH));
+    }
+    enhancedTxParsed += slices.reduce((s, sl) => s + sl.length, 0);
+    const parsedWaves = await Promise.all(slices.map((sl) => fetchEnhanced(sl.map((s) => s.signature))));
+
+    for (let w = 0; w < slices.length && buyers.length < limit; w++) {
+      const bySig = new Map(parsedWaves[w].map((t) => [t.signature, t]));
+      // Recorrer en orden cronológico (la Enhanced API puede devolver desordenado).
+      for (const s of slices[w]) {
+        const tx = bySig.get(s.signature);
+        if (!tx) continue;
+        const b = pumpBuyOf(tx, mint);
+        if (!b || seen.has(b.wallet)) continue;
+        seen.add(b.wallet);
+        buyers.push({
+          wallet: b.wallet,
+          rank: buyers.length + 1,
+          solIn: b.solIn,
+          tokensOut: b.tokensOut,
+          blockTime: tx.timestamp ?? s.blockTime,
+          signature: s.signature,
+        });
+        if (buyers.length >= limit) break;
+      }
     }
   }
-  return buyers;
+
+  const oldestBlockTime = chrono[0]?.blockTime ?? 0;
+  const newestBlockTime = chrono.length ? chrono[chrono.length - 1].blockTime : 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const stats = {
+    mint,
+    signaturesScanned: sigs.length,
+    pagesUsed,
+    hitPageCap,
+    buyersFound: buyers.length,
+    buyersRequested: limit,
+    oldestBlockTime,
+    newestBlockTime,
+    likelyTruncated: hitPageCap, // si se agotó el tope, el set NO arranca en el génesis
+    likelyMigrated: newestBlockTime > 0 && nowSec - newestBlockTime > MIGRATION_STALE_SEC,
+    enhancedTxParsed,
+    elapsedMs: Date.now() - startedAt,
+  };
+  return { buyers, stats };
 }

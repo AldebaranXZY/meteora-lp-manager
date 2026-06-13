@@ -1,7 +1,14 @@
 #!/bin/sh
-# Corre el test de integración discover→analyze antes de CADA push (local).
-# Se saltea solo si no hay BITQUERY_API_KEY en .env.local (entonces no bloquea).
+# Corre los tests antes de CADA push (local):
+#   1) unit tests (node --test): co-ocurrencia + predicado de compra (sin red)
+#   2) test:discover: integración viva discover→analyze (se saltea sin HELIUS_API_KEY)
 # Para saltearlo a propósito (ej. red caída): git push --no-verify
+echo "[pre-push] unit tests (coalgo + pumpfun)…"
+npm test --silent
+if [ $? -ne 0 ]; then
+  echo "[pre-push] ✗ unit tests fallaron — push abortado (usá: git push --no-verify para forzar)."
+  exit 1
+fi
 echo "[pre-push] test:discover (Jupiter discover + Helius buyers, local)…"
 npm run --silent test:discover
 if [ $? -ne 0 ]; then
